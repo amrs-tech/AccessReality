@@ -4,8 +4,8 @@ The supplied implementation plan is a specification. This file records executed 
 
 ## Environment and release identity
 
-- Verification date: 10 October 2026, Asia/Calcutta (UTC+05:30); local Windows workspace.
-- Application commit: recorded after the final passing checks below; the subsequent documentation commit changes this record only.
+- Verification date: 10 October 2026, approximately 20:20 Asia/Calcutta (UTC+05:30); local Windows workspace.
+- Tested application commit: `e916a321504479f3a41da1f5c2b39513c00eee90`. The subsequent documentation commit adds this recorded identity only; application code is identical.
 - Dependency lockfile SHA-256: `29654A749070E9C23B10C3D8696C827B9F8B1A0AB38BB622B687004291DC84D1`.
 - Runtime: Node.js 22.22.2 / npm 10.9.7. Next.js 16.4.0, React 19.3.0, TypeScript 6.0.3; exact pins and lockfile committed.
 - Database migrations: `001_core.sql`, `002_private_access.sql`, `003_workflow_rpcs.sql`; applied to disposable PostgreSQL 18.4 with UTF-8 encoding and UTC, not a hosted Supabase project.
