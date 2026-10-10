@@ -20,7 +20,11 @@ Expired leases inspect their attempts: provably undispatched reservations can be
 
 ## Evidence and assessment
 
-Maps labels use a versioned exact English mapping and JSON pointer. Negative attributes are processed first; absent attributes create no claim. Reviews/snippets are bounded, public-only immutable text, with review IDs and source-group hashes, actual source links and publication/edit/retrieval dates. Source text masks explicit unnecessary personal details while preserving UTF-16 offsets. Search snippets never claim a full page was reviewed. Ambiguous brand/branch matches cannot affect fit.
+Maps labels use a versioned exact English mapping and JSON pointer. Negative attributes are processed first; absent attributes create no claim. Reviews/snippets are bounded, public-only immutable text, with review IDs and source-group hashes, actual source links and publication/edit/retrieval dates. Source text masks explicit unnecessary personal details while preserving UTF-16 offsets. Search snippets never claim a full page was reviewed. Ambiguous brand/branch matches remain in the ledger but are excluded before model extraction and cannot affect fit.
+
+The verified Gemini wire schema retains required fields, enums and object structure while omitting decoder string/array bounds; full local Zod validation enforces every bound after the response. Scope and condition strings must be copied verbatim. The extraction version is `gemini-public-evidence-v3-verbatim-scope`. A successful SerpApi review response with absent reviews is empty only when its observed `reviews_results_state` is exactly `No reviews`; unexplained missing arrays remain schema failures.
+
+Migration 004 separates Gemini's owner-configured 1000-attempt ceiling from provider account quota. That provider balance remains unknown (`null`); initialization preserves used counters, never presents a made-up provider balance, and increases need an explicit audited owner allocation.
 
 Gemini receives only public branch context/excerpts, never visitor priorities, diagnoses or private requirements. JSON schema permits source ID, known feature/polarity, exact quote and bounded scope. The server controls all provenance. Validation checks corpus/venue, exact span, feature entailment, questions, negatives, conditions, instructions and speculative claims. Unvalidated multilingual semantics stay unclear. Rejected proposals are recorded as bounded validation reasons and prevent favorable partial fit. A small synthetic evaluation set is not evidence of live model reliability.
 

@@ -1,8 +1,10 @@
 # Local demonstration: 2 minutes 40 seconds
 
-This is a recording plan, not a claim that a video exists. Required live-provider setup and account access are currently missing. Recording must show this app working locally with real SerpApi/Gemini/Supabase; browser-test fixtures are excluded.
+The configured local app has now completed a real browser investigation, including pause/reload/resume, in 40.8 seconds on 10 October 2026. It reused five genuine app-cache responses and made four real Gemini requests, with zero new searches for that run. This is a recording plan; no narrated submission video has been created or uploaded. Browser-test fixtures are excluded.
 
 Before recording: run offline checks, live preflight with model probe and budget reconciliation. Set the correct origin and verification allocation for the initial smoke. Find one real exact Bengaluru branch using a bounded run. Review each claimed source, dates and scope; never manufacture a dramatic barrier/contradiction. If all interesting features are unknown, use that honest uncertainty. Check remaining attempts and Supabase activation. Do not show `.env.local`, access codes, admin/account responses or dashboard keys.
+
+The verified branch was **Casa Fresco, Indiranagar: All-Day Dining & Café**, 609, 2nd Main Rd, off 100 Feet Road, Binnamangala, Stage 1, Indiranagar, Bengaluru 560038. The brief completed with **needs confirmation**: four undated listing attributes were accepted, eight reviews were sampled, and ambiguous search snippets were excluded from assessment. Three actual attribute citations were checked in the browser. Do not describe this as current accessibility certification or claim the reviews established lift operation. Use `http://localhost:3000`; sign in before recording, using the private code in ignored `.env.local`. The initial verification allocation currently has 24 of 30 attempts remaining.
 
 | Time | Screen / narration |
 |---|---|

@@ -6,6 +6,7 @@ import type { Venue } from '../../lib/contracts';
 import { advanceJob } from '../../lib/workflow/runner';
 import { ProviderError } from '../../lib/providers/errors';
 import { normalizeDetails } from '../../lib/adapters/place';
+import { makeSource } from '../../lib/evidence/normalize';
 const mock = vi.hoisted(()=>({job:null as any,deny:false,down:false,calls:[] as string[],cacheReply:null as any,commits:[] as any[]}));
 vi.mock('../../lib/server/db',()=>({db:vi.fn(),selectOne:vi.fn(async()=>mock.job),rpc:vi.fn(async(name:string,args:any)=>{
   mock.calls.push(name);if(mock.down)throw new Error('Database unavailable');
@@ -47,4 +48,14 @@ it('full provenance stays in immutable assessment revision while checkpoint rema
   const original=normalizeDetails({place_results:{title:venue.name,place_id:venue.googlePlaceId,extensions:[{accessibility:['Wheelchair accessible entrance']}]}},venue,'2026-10-10T10:00:00Z','synthetic-id');
   mock.job.phase='assess';mock.job.state.sources=original.sources;mock.job.state.claims=original.claims;
   const result=await advanceJob('test-session',mock.job.id,0,deps());expect(result.state.report?.sources).toEqual([]);expect(mock.commits[0].p_report.report.sources).toEqual(original.sources);expect(mock.commits[0].p_report.report.claims).toEqual(original.claims);
+});
+it('ambiguous branch snippets stay in the ledger without model dispatch or extraction failure',async()=>{
+  mock.job.phase='extract';
+  const source=makeSource({venueId:venue.id,kind:'search_snippet',text:'The chain offers wheelchair accessible restrooms.',sourceUrl:'https://example.test/chain',providerReviewId:null,providerSearchId:'synthetic-search',engine:'google',retrievedAt:'2026-10-10T10:00:00Z',publishedAt:null,editedAt:null,observedAt:null,selectionMethod:'web_query',metadata:{venueMatch:'ambiguous',truncated:true}});
+  mock.job.state.sources=[source];
+  const extract=vi.fn();const result=await advanceJob('test-session',mock.job.id,0,{...deps(),extract});
+  expect(extract).not.toHaveBeenCalled();expect(mock.calls).not.toContain('reserve_provider_attempt');
+  expect(result.phase).toBe('assess');expect(result.state.sources).toEqual([source]);expect(result.state.failedStages).toEqual([]);
+  const assessed=await advanceJob('test-session',mock.job.id,1,deps());
+  expect(assessed.state.report?.overall).toBe('needs_confirmation');expect(assessed.state.report?.isPartial).toBe(false);expect(assessed.state.claims).toEqual([]);
 });

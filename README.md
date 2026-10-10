@@ -2,7 +2,7 @@
 
 **Know the barriers before you arrive.** A private, single-venue accessibility evidence investigator. Choose practical requirements, select an exact branch, and read a source-linked brief that preserves barriers, contradictions, old observations and unknowns.
 
-P0 application implemented. Offline checks exercise synthetic evidence only; **real provider responses, hosted Supabase and Vercel deployment have not been verified in this workspace because account credentials are absent.** See [verification](docs/verification.md) for actual outcomes and release gates. There is no production mock-data switch.
+P0 application implemented. Hosted Supabase migrations, real SerpApi response shapes and Gemini extraction/action selection have been verified with the owner's credentials. Offline tests use labeled synthetic evidence only. See [verification](docs/verification.md) for actual outcomes and remaining deployment gates. There is no production mock-data switch.
 
 ## What it does
 
@@ -24,20 +24,20 @@ Use Node.js **22.x** (verified locally with 22.22.2). All direct dependencies an
 
 ```powershell
 npm ci
-Copy-Item .env.example .env.local
+npm run setup:local
 ```
 
-Fill `.env.local` with a SerpApi key, a Gemini key with access to the configured free-tier model, a Supabase Free project's URL/server secret, and a private demo access code (at least 8 characters). Generate **three distinct** 32-byte secrets for `ADMIN_API_SECRET`, `SESSION_HMAC_SECRET`, `RATE_LIMIT_HMAC_SECRET` using a cryptographic generator. Never put them in browser variables, source, terminal command arguments or screenshots. Set `APP_ORIGIN=http://localhost:3000`. Keep `SEARCH_ENABLED=false` until setup succeeds. No credentials are supplied with this repository.
+Fill `.env.local` with a SerpApi key, a Gemini key with access to the configured free-tier model, and a Supabase Free project's URL/server secret. `npm run setup:local` generates only missing `DEMO_ACCESS_CODE` and three distinct 32-byte secrets for `ADMIN_API_SECRET`, `SESSION_HMAC_SECRET`, `RATE_LIMIT_HMAC_SECRET`; it preserves existing values and never prints secrets. Read `DEMO_ACCESS_CODE` in that ignored file to sign in. Never put secrets in browser variables, source, terminal command arguments or screenshots. Set `APP_ORIGIN=http://localhost:3000`. Keep `SEARCH_ENABLED=false` until setup succeeds. No provider credentials are supplied with this repository.
 
 Supabase server credentials can be the project's supported secret key or legacy service-role key. Do not use its publishable/anon key. Migrations enforce service-role privileges and no browser access.
 
 ```powershell
 # Authentication is interactive. Target only your intended development project.
 npx supabase login
-npx supabase init
+# Supabase configuration is already committed; do not run init again.
 npx supabase link --project-ref YOUR_PROJECT_REF
 npx supabase db push --dry-run
-# Inspect the three migration names and selected project before applying.
+# Inspect pending migration names and selected project before applying.
 npx supabase db push
 npm run preflight
 npm run preflight -- --probe-llm
@@ -64,10 +64,13 @@ The front page and `/api/health` run without credentials, but the real investiga
 | `npm test` | Offline domain, adapter, security and workflow tests; external fetch prohibited |
 | `npm run test:db` | Real disposable PostgreSQL migration, grants, concurrency and recovery tests |
 | `npm run test:e2e` | Offline Playwright API interceptions and axe checks |
+| `npm run setup:local` | Generate only missing private application secrets in ignored `.env.local` |
 | `npm run build` / `npm start` | Production build / server; no provider calls during build |
 | `npm run preflight -- --probe-llm` | Owner DB/RPC/account check; optional explicit Gemini schema probe |
 | `npm run budget:init -- --enable` | Conservative real allowance reconciliation and deliberate DB enable |
 | `npm run test:live -- --confirm-live` | Opt-in real smoke, durable verification allocation required |
+| `npm run test:live:browser -- --confirm-live` | Actual Chrome login, pause/reload/resume, citations, reassessment, privacy and secret checks |
+| `npm run test:live:quality -- --confirm-live` | One real Gemini call on 28 labeled synthetic examples; no venue search |
 | `npm run retention` | Retention dry run |
 | `npm run retention -- --delete` | Owner-requested permitted cleanup, budget audit retained |
 
@@ -80,13 +83,17 @@ npm run test:e2e
 
 Native compiler/browser/database processes needed permission outside this Codex Windows sandbox; this was an execution-environment limitation, not a provider fallback. Ordinary terminals should not require that approval.
 
+If preflight lists missing application secrets, run `npm run setup:local`. If port3000 is already in use, stop the existing app in its terminal before starting another. Changes to `.env.local` require restarting the production server. `APP_ORIGIN` must match the address used in your browser: use `http://localhost:3000` with the default setup. Supabase CLI telemetry writes to the user's home folder; restricted Codex execution needs approved filesystem access. Do not rerun `supabase init` once `supabase/config.toml` exists.
+
+If Windows reports that `npm.ps1` cannot run because scripts are disabled, invoke the same commands with `npm.cmd` (for example, `npm.cmd run dev`). There is no need to weaken the machine's script execution policy. A clean `npm ci --no-audit --no-fund` was verified with Node 22.22.2/npm 10.9.7. Deprecation and color/config-loader warnings observed during checks were non-fatal; exact compatible pins are retained.
+
 ## Live verification and credit accounting
 
-No live search has been run during this implementation. A cold use costs up to **one discovery + five investigation attempts**. The application counts reserved/consumed attempts conservatively, including uncertain timeouts; these are not exact provider-billed credits. A cached response costs zero app attempts. TTLs: discovery/reviews/snippets 6 hours, details 24 hours; original source/fetch dates are retained.
+Real local investigations have been run with the owner's configured credentials; search usage and failed attempts are recorded in [verification](docs/verification.md). A cold use costs up to **one discovery + five investigation attempts**. The application counts reserved/consumed attempts conservatively, including uncertain timeouts and responses served from SerpApi's own cache; these are not exact provider-billed credits. An app-cached response costs zero attempts. TTLs: discovery/reviews/snippets 6 hours, details 24 hours; original source/fetch dates are retained.
 
-The default global operational ceiling is bounded by `min(owner_cap, actual_remaining - protected_reserve)`, with a protected reserve of 30. Global, UTC-day (default30), session (12) and job (5 searches, 6 LLM attempts) checks are atomic. No month-based reset. Development and deployment sharing a provider key must share this database. Do not initialize independent budgets for the same key.
+The default global SerpApi operational ceiling is bounded by `min(owner_cap, actual_remaining - protected_reserve)`, with a protected reserve of 30. Gemini's global ceiling is an owner-configured limit of1000 attempts, not a retrieved provider balance; its remaining account quota stays unknown. Global, UTC-day (default30), session (12) and job (5 searches, 6 LLM attempts) checks are atomic. No month-based reset. Development and deployment sharing a provider key must share this database. Do not initialize independent budgets for the same key.
 
-For the initial **30-search maximum** verification allocation, set `VERIFICATION_MODE=true` in the running app and local `.env.local`, enable searches deliberately, then run the explicit live script. The server tags jobs into a durable allocation bucket; clients cannot select it or change caps. The script needs room for a complete six-attempt run and refuses when unavailable. It writes sanitized results under ignored `.verification/`. `LIVE_APP_URL` can select the authorized deployed URL. Reset `VERIFICATION_MODE=false` for ordinary owner-controlled demos. The smoke validates provenance and zero-search reassessment; finish the manual real browser/provider shape/resume/isolation gates in [verification](docs/verification.md).
+For the initial **30-search maximum** verification allocation, set `VERIFICATION_MODE=true` in the running app and local `.env.local`, enable searches deliberately, then run the explicit live scripts. The server tags jobs into a durable allocation bucket; clients cannot select it or change caps. Search smoke scripts need room for a complete six-attempt run and refuse when unavailable. They write sanitized results under ignored `.verification/`. `LIVE_APP_URL` can select the authorized deployed URL when its origin matches `APP_ORIGIN`. The configured local setup remains in verification mode to preserve the 30-attempt ceiling. For ordinary owner-controlled demos, explicitly set `VERIFICATION_MODE=false` and restart; the other durable caps still apply. Model quality checks make one Gemini request each; its account quota is not exposed as a verified balance.
 
 Provider failures produce readable partial briefs; timeout/network ambiguity consumes the reservation and prevents silent replay. Known429/5xx errors have at most one later capped retry. Text extraction failure preserves public sources. Invalid model planning uses a labeled deterministic fallback. Closing a browser pauses initiation, not already dispatched requests.
 
@@ -105,7 +112,7 @@ Provider failures produce readable partial briefs; timeout/network ambiguity con
 5. Check `/api/health`, confirm Vercel Fluid Compute and effective60-second step-route duration, reconcile the shared budget deliberately, then enable searches and redeploy.
 6. Run the real deployed smoke in an incognito session, including at least one legitimate uncached dispatch and a second-session ownership check. A green build alone does not verify deployment. Confirm deployment protection settings and Supabase activation before judges visit.
 
-No Vercel project/token/login or repository remote is available here. No deployment URL was created. Hobby eligibility/free model quotas are account-specific; no billing or paid fallback is enabled.
+The Vercel CLI is installed but its account check reports logged out. No authorized Vercel project/token or repository remote is configured here, so no deployment URL was created. Hobby eligibility/free model quotas are account-specific; no billing or paid fallback is enabled.
 
 ## Hackathon submission
 

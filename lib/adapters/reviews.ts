@@ -9,7 +9,10 @@ export function reviewsParams(venue: Venue, query?: string, nextPageToken?: stri
   if (nextPageToken) { params.next_page_token = nextPageToken; params.num = "20"; } return params;
 }
 export function normalizeReviews(payload: unknown, venue: Venue, retrievedAt: string, providerSearchId: string | null, targeted = false): { sources: Source[]; reviewsExamined: number; nextPageToken: string | null; topics: string[] } {
-  const data = object(payload); if (!data || !Array.isArray(data.reviews)) throw new ProviderError("schema_drift", "Review response is missing reviews");
+  const data = object(payload);
+  // Observed Search Archive shape for a completed keyword query with no matches.
+  if (data && data.error === undefined && data.reviews === undefined && object(data.search_metadata)?.status === "Success" && object(data.search_information)?.reviews_results_state === "No reviews") return { sources: [], reviewsExamined: 0, nextPageToken: null, topics: [] };
+  if (!data || !Array.isArray(data.reviews)) throw new ProviderError("schema_drift", "Review response is missing reviews");
   const sources: Source[] = [];
   for (const item of data.reviews.slice(0, 20)) {
     const review = object(item); if (!review) continue; const extracted = object(review.extracted_snippet);

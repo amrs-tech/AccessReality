@@ -2,6 +2,8 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { Pool, type PoolConfig } from "pg";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 type Json = Record<string, any>;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -276,6 +278,55 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
     assert.equal((await rpc("reconcile_budget", ["serpapi", 100, 3, 100, true])).bucket.limit_units, 3);
     assert.equal((await rpc("reconcile_budget", ["serpapi", 100, 3, 100, true, true])).bucket.limit_units, 98);
     assert.equal((await rpc("reconcile_budget", ["serpapi", 0, 3, 100, true])).bucket.limit_units, 1);
+  });
+
+  await test("Gemini uses owner attempt caps; provider allowance remains unknown across configuration and migration", async () => {
+    const job = await create(await session(), "investigation"); const held = await lease(job);
+    const attempt = await reserve(job, held.lease_token, null as unknown as string, "EXTRACT_SYNTHETIC", "gemini");
+    assert.equal(attempt.ok, true);
+    await rpc("mark_dispatch", [attempt.attempt_id, held.lease_token]);
+    await commit(job, held.lease_token, attempt.attempt_id);
+    const lowered = await rpc("configure_llm_budget", [5, true]);
+    assert.equal(lowered.bucket.limit_units, 5);
+    assert.equal(lowered.bucket.reserved_units, 1);
+    assert.equal(lowered.last_known_provider_remaining, null);
+    assert.equal(lowered.checked_at, null);
+    assert.equal(lowered.bucket.last_known_provider_remaining, null);
+    assert.equal(lowered.bucket.checked_at, null);
+    assert.equal(lowered.bucket.metadata.allowance_source, "owner_attempt_cap");
+    assert.equal(lowered.bucket.metadata.last_known_provider_remaining, undefined);
+    assert.equal((await rpc("configure_llm_budget", [1000, true])).bucket.limit_units, 5);
+    assert.equal((await rpc("configure_llm_budget", [20, true, true])).bucket.limit_units, 20);
+    assert.equal((await rpc("configure_llm_budget", [0, false])).bucket.limit_units, 1);
+    assert.equal((await rpc("configure_llm_budget", [0, false])).bucket.reserved_units, 1);
+    // A legacy caller's synthetic number must never become a claimed observed allowance.
+    const legacy = await rpc("reconcile_budget", ["gemini", 1000, 0, 10, true, true]);
+    assert.equal(legacy.bucket.limit_units, 10);
+    assert.equal(legacy.last_known_provider_remaining, null);
+    assert.equal(legacy.checked_at, null);
+    await admin.query("update public.budget_buckets set last_known_provider_remaining=1000,checked_at=now(),metadata=metadata||'{\"last_known_provider_remaining\":1000,\"checked_at\":\"synthetic-old-check\",\"protected_reserve\":0}' where id='global:gemini'");
+    await admin.query(await readFile(path.join(process.cwd(), "supabase/migrations/004_llm_budget.sql"), "utf8"));
+    const corrected = (await server.query("select * from public.budget_buckets where id='global:gemini'")).rows[0];
+    assert.equal(corrected.limit_units, 10);
+    assert.equal(corrected.reserved_units, 1);
+    assert.equal(corrected.last_known_provider_remaining, null);
+    assert.equal(corrected.checked_at, null);
+    assert.equal(corrected.metadata.last_known_provider_remaining, undefined);
+    assert.equal(corrected.metadata.checked_at, undefined);
+    assert.equal(corrected.metadata.protected_reserve, undefined);
+    const status = await rpc("preflight_status", []);
+    assert.equal(status.ok, true);
+    assert.equal(status.migration, "004");
+    assert.equal(status.rpcVersion, "2");
+    assert.equal(status.llmBudgetSource, "owner_attempt_cap");
+    assert.equal((await server.query("select count(*)::integer count from public.job_events where event_type='llm_budget_configured'")).rows[0].count, 6);
+    const anon = new Pool({ ...connection, options: "-c role=anon" });
+    const authenticated = new Pool({ ...connection, options: "-c role=authenticated" });
+    try {
+      for (const pool of [anon, authenticated]) {
+        await assert.rejects(pool.query("select public.configure_llm_budget(1000,true,true)"), /permission denied/);
+      }
+    } finally { await anon.end(); await authenticated.end(); }
   });
 
   await test("Rate limits increment atomically under parallel requests", async () => {

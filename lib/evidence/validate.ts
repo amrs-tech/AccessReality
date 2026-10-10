@@ -3,7 +3,7 @@ import { extractedClaimSchema } from "../contracts";
 import { relativeAgeInterval, validatedDate } from "./dates";
 import { claimIdentityId } from "./identity";
 export { claimIdentityId } from "./identity";
-export const EXTRACTOR_VERSION = "gemini-public-evidence-v2-conservative";
+export const EXTRACTOR_VERSION = "gemini-public-evidence-v3-verbatim-scope";
 const FEATURE_CONTEXT: Record<Feature, RegExp> = {
   arrival_step_free: /(?:arrival|drop[- ]?off|parking).*(?:route|path|entrance)|(?:route|path).*(?:parking|drop[- ]?off)/i,
   entrance_step_free: /entrance|entry|door|ramp|steps|stairs/i,

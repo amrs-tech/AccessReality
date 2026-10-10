@@ -49,6 +49,8 @@ function sanitizedPlace(value: unknown): unknown {
 }
 export function sanitizePayload(payload: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { search_metadata: { id: string(object(payload.search_metadata)?.id, 100), status: string(object(payload.search_metadata)?.status, 100) } };
+  const information = object(payload.search_information);
+  if (information?.reviews_results_state !== undefined) out.search_information = { reviews_results_state: string(information.reviews_results_state, 100) };
   if (payload.local_results !== undefined) out.local_results = Array.isArray(payload.local_results) ? payload.local_results.slice(0, 5).map(sanitizedPlace) : null;
   if (payload.place_results !== undefined) out.place_results = sanitizedPlace(payload.place_results);
   if (payload.reviews !== undefined) out.reviews = Array.isArray(payload.reviews) ? payload.reviews.slice(0, 20).map((item) => { const r = object(item); if (!r) return null;

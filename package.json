@@ -14,9 +14,12 @@
     "test": "vitest run",
     "test:db": "tsx scripts/test-db.ts",
     "test:e2e": "playwright test",
+    "setup:local": "tsx scripts/setup-local.ts",
     "preflight": "tsx --conditions=react-server scripts/preflight.ts",
     "budget:init": "tsx --conditions=react-server scripts/init-budget.ts",
     "test:live": "tsx --conditions=react-server scripts/live-smoke.ts",
+    "test:live:browser": "tsx --conditions=react-server scripts/live-browser.ts",
+    "test:live:quality": "tsx --conditions=react-server scripts/live-quality.ts",
     "retention": "tsx --conditions=react-server scripts/retention.ts"
   },
   "dependencies": {

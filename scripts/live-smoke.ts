@@ -28,6 +28,9 @@ run(async()=>{
       if(job.nextRetryAt){const delay=Date.parse(job.nextRetryAt)-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,Math.min(delay,60000)));}
       job=await api(`/api/jobs/${id}/step`,'POST',{expectedVersion:job.stateVersion});
       console.log(JSON.stringify({jobId:id,phase:job.phase,providerAttempts:job.providerAttempts,appCacheHits:job.appCacheHits}));
+      const persisted=await api(`/api/jobs/${id}`);
+      if(persisted.stateVersion!==job.stateVersion||persisted.providerAttempts!==job.providerAttempts)throw Object.assign(new Error(),{code:'persisted_resume_mismatch'});
+      job=persisted;
     }
     return job;
   }
@@ -41,9 +44,17 @@ run(async()=>{
   if(revised.providerAttempts!==job.providerAttempts)throw Object.assign(new Error(),{code:'reassessment_spent_search'});
   const attempts=await client.from('provider_attempts').select('id,status,provider_search_id,provider').in('job_id',[discovery.jobId,job.id]);
   if(attempts.error||attempts.data?.some(a=>a.provider==='serpapi'&&a.status==='completed'&&!a.provider_search_id))throw Object.assign(new Error(),{code:'missing_provider_search_id'});
+  const ownerCookies=new Map(cookies);const ownerCsrf=csrf;
+  cookies.clear();cookie='';csrf='';await api('/api/session');await api('/api/session','POST',{accessCode:e.DEMO_ACCESS_CODE});
+  const isolation:{path:string;denied:true}[]=[];
+  for(const [path,method,data] of [[`/api/jobs/${job.id}`,'GET',undefined],[`/api/jobs/${job.id}/export`,'GET',undefined],[`/api/jobs/${job.id}/cancel`,'POST',{}]] as const) {
+    try {await api(path,method,data);throw Object.assign(new Error(),{code:'cross_session_leak'});}
+    catch(error) {if((error as {code?:string}).code!=='not_found')throw error;isolation.push({path,denied:true});}
+  }
+  cookies.clear();for(const [key,value] of ownerCookies)cookies.set(key,value);cookie=[...cookies].map(([key,value])=>`${key}=${value}`).join('; ');csrf=ownerCsrf;
   const after=await api('/api/admin/preflight','POST',{probeLlm:false},true);
   const lockHash=createHash('sha256').update(await readFile('package-lock.json')).digest('hex');
-  const record={checkedAt:new Date().toISOString(),timezone:'Asia/Calcutta',url:base,venue:{name:venue.name,address:venue.address},providerAttempts:discovered.providerAttempts+job.providerAttempts,appCacheHits:discovered.appCacheHits+job.appCacheHits,beforeRemaining:before.account.remaining,afterRemaining:after.account.remaining,spots,reassessmentZeroSearch:true,phase:job.phase,lockHash};
+  const record={checkedAt:new Date().toISOString(),timezone:'Asia/Calcutta',url:base,jobId:job.id,venue:{name:venue.name,address:venue.address},providerAttempts:discovered.providerAttempts+job.providerAttempts,appCacheHits:discovered.appCacheHits+job.appCacheHits,llmAttempts:job.llmAttempts,beforeRemaining:before.account.remaining,afterRemaining:after.account.remaining,spots,reassessmentZeroSearch:true,persistedApiResume:true,crossSessionIsolation:isolation,phase:job.phase,limitations:job.report.limitations,lockHash};
   await mkdir('.verification',{recursive:true});await writeFile(`.verification/live-${Date.now()}.json`,JSON.stringify(record,null,2));console.log(JSON.stringify(record,null,2));
-  // This smoke is only one gate. Browser isolation, pause/resume and secret-bundle checks remain separate.
+  // Browser pause/reload, semantics review and secret-bundle checks remain separate gates.
 });

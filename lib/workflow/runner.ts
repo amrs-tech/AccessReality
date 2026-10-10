@@ -99,7 +99,7 @@ export async function advanceJob(sessionId:string,jobId:string,version:number,de
       } else {const result=await search(webParams(s.venue!,feature,action.id.endsWith(':1')),action.id);newSources=normalizeWeb(result.payload,s.venue!,result.retrievedAt,result.providerSearchId);}
       phase='extract';s.lastMessage=action.reason;s.pendingAction=null;
     } else if(phase==='extract') {
-      const outstanding=s.sources.filter(source=>source.kind!=='maps_attribute'&&!s.extractedSourceIds.includes(source.id));const batch=immutableTextBatches(outstanding)[0];
+      const outstanding=s.sources.filter(source=>source.kind!=='maps_attribute'&&source.metadata.venueMatch==='exact'&&!s.extractedSourceIds.includes(source.id));const batch=immutableTextBatches(outstanding)[0];
       if(!batch?.length){phase='assess';}
       else if(job.llm_reserved>=job.llm_cap){s.failedStages.push('unprocessed_sources_llm_cap');phase='finalize';stopReason='llm_budget_exhausted';}
       else {
@@ -170,7 +170,7 @@ export async function advanceJob(sessionId:string,jobId:string,version:number,de
     return committed.job||await selectOne('jobs',{id:job.id,session_id:sessionId},client);
   } catch(error) {
     const provider=error instanceof ProviderError?error:null;const code=provider?.code||(error instanceof AppError?error.code:'upstream_unavailable');
-    console.error(JSON.stringify({requestId:deps.requestId,jobId:job.id,attemptId,errorCode:code,uncertain:provider?.uncertain||false}));
+    console.error(JSON.stringify({requestId:deps.requestId,jobId:job.id,attemptId,errorCode:code,providerMessage:provider?.message,uncertain:provider?.uncertain||false}));
     if(code==='busy'){await rpc('fail_step',{p_job_id:job.id,p_lease_token:lease.lease_token,p_expected_version:version,p_attempt_id:attemptId,p_code:code,p_uncertain:false,p_retry_at:new Date(now().getTime()+2000).toISOString(),p_phase:job.phase,p_state:s},client);throw new AppError('busy',409,true);}
     const retries=s.retryCounts[actionKey]||0;const retry=Boolean(provider?.retryable)&&!provider?.uncertain&&retries<1&&!(actionKey.includes('REVIEWS')&&s.reviewRequests>=2)&&!(actionKey.includes('WEB')&&s.webRequests>=2);
     s.retryCounts[actionKey]=retries+1;
