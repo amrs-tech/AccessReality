@@ -1,0 +1,13 @@
+node_modules/
+.next/
+.env*
+!.env.example
+.vercel/
+coverage/
+test-results/
+playwright-report/
+.local-postgres/
+.test-db-*/
+*.log
+.verification/
+*.tsbuildinfo
