@@ -2,6 +2,8 @@
 
 The plan is a specification. This file records executed checks and remaining gates separately. Synthetic evidence is confined to tests and explicit model-quality checks. The real browser investigation used configured SerpApi, Gemini and hosted Supabase services without response interception.
 
+The dated records below are retained as history. The latest owner-requested balance policy and verification are recorded in the final 11 October section.
+
 ## Release identity and environment
 
 - Tested application commit: `19e09f90b909bb364e5fd6dcdcda69497cfc38bc`. The following verification-document commit does not change application code.
@@ -127,3 +129,49 @@ Offline workflow regressions additionally verify that reaching the normal search
 The production server was restarted on the existing localhost3000 port and left running. The screenshot `.verification/result-headline-unknown.png` is clearly labeled **synthetic test venue** and is an offline UI preview, not real venue evidence. No database migration changed; the previous 26 PostgreSQL gates were not rerun for this display-only change. No deployment was created; the previously documented Vercel access gap remains.
 
 The review also identified follow-up cases outside this display change: cached follow-up eligibility at the search cap, optional search-budget denial classification, finalization at the twentieth step, and overly generic model scope labels. They require dedicated regressions and a provenance-preserving implementation; none caused this run's validation failures. No budget, extraction, assessment, migration or saved evidence semantics were loosened here.
+
+## 11 October: balance-sensitive full investigation
+
+Tested application commit: `aac3f8947b7fe6658107bea3163270589fa7c428`. The following verification-document commit does not change application code.
+
+The owner explicitly requested the five-search policy only when SerpApi remaining credits reach 50 or fewer, a full bounded investigation above that threshold, and publication to `amrs-tech/AccessReality`. This supersedes the plan's original universal five-search ceiling.
+
+- New investigations with a fresh trusted remaining estimate above 50 use a finite balanced menu: details, newest reviews and at most three distinct checks for each unresolved must-have (reviews, branch-specific snippets, and the observed venue domain when available). Maximum 26 searches, 56 model requests and 128 steps; five active minutes, protected reserve and global/day/session limits remain.
+- At 50 or fewer, or without a recent trusted account balance, the job uses the five-search policy. Reservations and the final pre-dispatch check re-evaluate this atomically. Valid cached responses remain eligible after a search limit is reached. Saved terminal investigations keep their original policy and evidence; start a new investigation to apply the new policy.
+- Optional search-budget denials after completed processing save a complete unconfirmed brief. Failed required checks, excluded invalid extraction proposals and ambiguous dispatches remain partial. A pre-dispatch release can save its failure checkpoint without a duplicate refund. Closing at the workflow bound now persists the report.
+- Extraction uses immutable batches of at most 32 sources and 24,000 characters. Extraction validation, deterministic assessment, dated lift-operation requirements and unknown semantics were retained.
+- Migrations 005 and 006 were first exercised on disposable PostgreSQL18.4, then applied only after inspecting pending migration names and matching the linked project to the configured Supabase URL. No remote reset; 001–005 were not rewritten after application.
+- The first free live account reconciliation revealed that the hosted database clock was approximately20 seconds ahead of the Windows host. Migration006 uses database receipt time and database elapsed-time validation, preserving the host retrieval timestamp only as diagnostic metadata. Both clock directions, old/forged snapshots, fencing and kill-switch preservation passed.
+- Owner budgets were deliberately configured to60 searches per UTC day and64 per session (Gemini240/96), preserving global220 and protected30. The separate original30-attempt verification allocation and its used counters were preserved. Credentials were retained unchanged in ignored `.env.local`.
+
+| Executed check | Actual result |
+|---|---|
+| Offline unit tests | **162/162 passed** across five files after the verified empty-search fix; no provider fetches. |
+| TypeScript / ESLint | Passed, including final verification-script edits. |
+| Disposable PostgreSQL | **42/42 gates passed**, including all prior races, leases, grants and accounting gates, plus balance51/50, sixth search, crossing reservations, fresh/unknown/stale policies, cache at cap, observation fencing, refunds, kill races, clock skew and released-attempt checkpoints. |
+| Offline browser tests | **18/18 passed** in Chrome. API interception is confined to these tests; headline, expanded/conserving/legacy policies, privacy, keyboard, axe and mobile flows passed. |
+| Production build | Passed optimized Next.js compilation, TypeScript and prerendering. |
+| Hosted database / balance | Preflight passed migration006/RPC3, RLS and private grants; actual `total_searches_left`239, fresh expanded policy26. Gemini provider quota remains unknown. No model probe was made for this follow-up. |
+
+The first real-browser invocation stopped during storage preflight with `dependency_unavailable` before login/discovery and before creating a new verification record. A subsequent direct preflight passed with the same239 balance; no search attempt was added by that failed invocation. The following live retry is recorded separately below.
+
+The next real browser run (`eeb8121d-3298-4843-84a1-c84d60af92ba`) selected the actual Casa Fresco branch and used expanded26 mode. It finished in75.487 seconds with a **partial, needs-confirmation** brief: an optional venue-domain query returned the provider's special successful-empty format, which was initially treated as an upstream error. Pause/reload/resume, three displayed exact citations, zero-call reassessment, independent-session404 read/export/cancel, durable counters and94 API/16 static body scans passed; the complete-report gate correctly failed. It used7 SerpApi reservations (six completed and one failed), one genuine app-cache reuse and8 Gemini requests. Account239→232; verification12→19/30. This saved partial was not rewritten.
+
+One additional transactionally reserved diagnostic request inspected that same actual query: HTTP200, `search_metadata.status: Success`, `search_information.organic_results_state: Fully empty`, the exact documented no-results message and absent `organic_results`. The corrected live run later received that same provider ID from SerpApi's own cache. The diagnostic harness captured the wire shape but failed its report checkpoint; its record remains partial/diagnostic-only and its attempt remains consumed/failed. It does not pretend to be an investigation report. Its conservative reservation brings verification usage to20/30, despite provider-cache reuse. A second invocation with the same idempotency key was rejected as terminal without a further dispatch.
+
+The corrected provider and web adapter accept only that exact [documented successful-empty shape](https://serpapi.com/api-status-and-error-codes) for Google organic search, producing an empty source list and no invented claim. Wrong engines, error/status/state combinations, nonempty or malformed result arrays and arbitrary errors remain failures. Fifteen shape regressions passed; the production app was rebuilt before the final live check.
+
+### Final real browser result
+
+Final real job `45fc6ee1-ba3a-4ca6-9236-c8b37ac63f8d`, 11 October11:56–11:58 IST, against the rebuilt localhost production server with no response interception:
+
+- **Passed**, terminal `complete`, report not partial, `needs_confirmation`, `no_eligible_actions`, expanded26 policy. Completed in **88.953 seconds** including pause/reload/resume, through29 sequential investigation steps. All eight eligible investigation actions for the two selected must-haves completed; discovery adds one response.
+- **Two new SerpApi reservations, seven genuine app-cache reuses including discovery, ten Gemini requests.** Original retrieval dates and provider IDs were retained. One newly reserved response was served by SerpApi's own cache; actual balance232→231.
+- Four accepted undated listing claims and five sampled reviews. Three exact displayed quotations/pointers spot-checked. Missing, generic or undated public evidence remained insufficient and the headline clearly said requirements were not confirmed. No current lift operation was inferred.
+- Pause/reload held version1 and unchanged attempts until explicit Resume. Requirement reassessment made zero provider requests. An independent authenticated session received404 for reading, export and cancellation.
+- **107 actual API bodies and16 served browser assets scanned: zero read failures, zero configured-secret matches.** Real counters matched provider attempts and dispatch markers. All completed uncached searches had provider IDs; zero uncertain searches.
+- Verification ended **22/30**, eight left. Total follow-up reservations were10 (seven in the earlier partial, one diagnostic, two in the successful run); actual account239→231. No verification allocation was raised or reset. Account checks consumed no search credit; no extra live model-quality/probe calls were made.
+
+Final read-only audit found104 tracked/non-ignored source files and12 rebuilt browser static files with zero configured-secret matches. A separate scan of all128 historical Git blobs found zero exact secret or recognized credential/private-key/token pattern matches; all seven ignored-artifact checks passed. `.env.local`, `.verification/`, database scratch data, `.next`, dependencies, Supabase `.temp` and Vercel state are excluded. This is a targeted audit, not general secret-scanner certification.
+
+The original account gate, private sessions, RLS/grants, reservations, kill switches and protected reserve remain. Ordinary owner demo mode was enabled only after the initial live verification finished; the30-attempt record is retained. Old terminal reports still show their original limit and partial state. The under-three-minute recording plan and Codex/Gemini disclosure are in `docs/demo-script.md`; no narrated video or hackathon submission was created. Vercel remains undeployed because no authorized Vercel login/project/token is available; README gives the exact personal Hobby setup and deployment steps.
