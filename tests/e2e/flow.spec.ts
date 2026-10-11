@@ -22,7 +22,7 @@ function makeReport(mode: 'complete' | 'unknown' | 'partial', requirements: Requ
   };
 }
 
-async function fakeApi(page: Page, options: { mode?: 'complete' | 'unknown' | 'partial'; authenticated?: boolean; expire?: boolean; resumable?: boolean; savedReport?: Report; stopReason?: string } = {}) {
+async function fakeApi(page: Page, options: { mode?: 'complete' | 'unknown' | 'partial'; authenticated?: boolean; expire?: boolean; resumable?: boolean; savedReport?: Report; stopReason?: string; searchMode?: 'expanded' | 'conserve' | 'legacy'; searchCap?: number; effectiveProviderRemaining?: number | null; lastKnownProviderRemaining?: number | null } = {}) {
   let authenticated = options.authenticated ?? false;
   let requirements = options.savedReport ? options.savedReport.requirements.map(({ feature, priority, scope }) => ({ feature, priority, ...(scope ? { scope } : {}) })) : [...defaultRequirements];
   let stage = options.savedReport ? 3 : options.resumable ? 1 : 0;
@@ -38,13 +38,14 @@ async function fakeApi(page: Page, options: { mode?: 'complete' | 'unknown' | 'p
     stateVersion: kind === 'discovery' ? discoverySteps : stage, venue: kind === 'discovery' ? null : syntheticVenue,
     candidates: kind === 'discovery' && discoverySteps ? [syntheticVenue] : [], requirements,
     report: kind === 'investigation' && stage >= 3 ? options.savedReport ?? makeReport(mode, requirements) : null,
-    providerAttempts: kind === 'discovery' ? discoverySteps : Math.min(stage, 2), appCacheHits: 0, searchCap: kind === 'discovery' ? 1 : 5,
+    providerAttempts: kind === 'discovery' ? discoverySteps : Math.min(stage, 2), appCacheHits: 0, searchCap: kind === 'discovery' ? 1 : options.searchCap ?? 5,
     llmAttempts: kind === 'investigation' && stage >= 3 ? 1 : 0, llmCap: 6, sourceCount: stage >= 3 ? options.savedReport?.sources.length ?? (mode === 'complete' ? 1 : 0) : 0, reviewsExamined: stage >= 3 ? options.savedReport?.reviewsExamined ?? (mode === 'complete' ? 2 : 0) : 0,
     events: [{ type: 'test_action', message: 'Synthetic test action: checking entrance evidence.', createdAt: stamp }],
     stopReason: stage >= 3 ? options.stopReason ?? (mode === 'partial' ? 'upstream_unavailable' : 'evidence_sufficient') : null, nextRetryAt: retryAt,
     canResume: stage < 3, remainingAction: stage < 3 ? 'FETCH_NEWEST_REVIEWS' : null,
     discoveryJobId: kind === 'investigation' ? discoveryId : null, candidateId: kind === 'investigation' ? syntheticVenue.id : null,
-    lastKnownProviderRemaining: null, allowanceCheckedAt: null,
+    searchMode: options.searchMode ?? 'legacy', effectiveProviderRemaining: options.effectiveProviderRemaining ?? null,
+    lastKnownProviderRemaining: options.lastKnownProviderRemaining ?? null, allowanceCheckedAt: options.lastKnownProviderRemaining != null ? stamp : null,
   });
   await page.route('**/api/**', async route => {
     const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
@@ -310,4 +311,37 @@ for (const { origin, limitation } of [
   await expect(summary.getByText(/unfinished|unavailable provider|provider failure/i)).toHaveCount(0);
   expect(fake.counts().steps).toBe(0);
   await page.screenshot({ path: '.verification/result-headline-unknown.png', fullPage: false });
+});
+
+test('expanded policy shows finite full-run scope and labels the allowance estimate', async ({ page }) => {
+  const fake = await fakeApi(page, { authenticated: true, savedReport: makeReport('unknown', summaryRequirements), searchMode: 'expanded', searchCap: 26, effectiveProviderRemaining: 70, lastKnownProviderRemaining: 80, stopReason: 'search_budget_exhausted' });
+  await page.goto(`/investigate/${investigationId}`);
+  await expect(page.locator('.search-policy')).toContainText('Full bounded investigation.');
+  await expect(page.locator('.search-policy')).toContainText('Up to 26 searches');
+  await expect(page.getByText('Conservative remaining allowance estimate: 70. Based on the saved account check and later reserved attempts; not a live balance.')).toBeVisible();
+  await expect(page.getByText(/Last known provider allowance: 80, checked/)).toBeVisible();
+  await expect(page.locator('.stop-note')).toHaveText('The permitted evidence checks for this run are finished. Remaining venue requirements still need confirmation.');
+  await expect(page.locator('.reassess-controls')).toContainText('A new run checks the current account balance: above 50 credits permits the full bounded investigation; 50 or fewer limits it to 5 searches.');
+  await expect(page.getByRole('heading', { name: 'Requirements not confirmed — check with the venue before visiting.' })).toBeVisible();
+  expect(fake.counts().steps).toBe(0);
+});
+
+for (const remaining of [50, null]) test(`credit-conserving policy explains ${remaining === null ? 'unconfirmed' : 'threshold'} allowance without implying fit`, async ({ page }) => {
+  const fake = await fakeApi(page, { authenticated: true, savedReport: makeReport('unknown', summaryRequirements), searchMode: 'conserve', searchCap: 5, effectiveProviderRemaining: remaining, stopReason: 'search_budget_exhausted' });
+  await page.goto(`/investigate/${investigationId}`);
+  await expect(page.locator('.search-policy')).toHaveText('Credit-conserving investigation. Up to 5 searches because the allowance is 50 or fewer, or a fresh balance could not be confirmed.');
+  await expect(page.locator('.stop-note')).toHaveText('This investigation reached its credit-conserving search limit. Remaining venue requirements still need confirmation.');
+  if (remaining === null) await expect(page.getByText(/Conservative remaining allowance estimate:/)).toHaveCount(0);
+  else await expect(page.getByText(/Conservative remaining allowance estimate: 50\./)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Requirements not confirmed — check with the venue before visiting.' })).toBeVisible();
+  expect(fake.counts().steps).toBe(0);
+});
+
+test('saved legacy reports keep their limit and explain how new investigations use account policy', async ({ page }) => {
+  const fake = await fakeApi(page, { authenticated: true, savedReport: makeReport('unknown', summaryRequirements), searchMode: 'legacy', stopReason: 'search_budget_exhausted' });
+  await page.goto(`/investigate/${investigationId}`);
+  await expect(page.locator('.search-policy')).toHaveText('Saved investigation. This run keeps its original search limit. Start a new investigation to use the current account policy.');
+  await expect(page.locator('.reassess-controls')).toContainText('Unconfirmed balances also use the smaller limit. Fresh app cache entries may be reused.');
+  await expect(page.getByRole('button', { name: 'Investigate remaining gaps' })).toBeVisible();
+  expect(fake.counts().steps).toBe(0);
 });

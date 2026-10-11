@@ -10,6 +10,12 @@ const reasons: Record<string, string> = { evidence_sufficient: 'Selected require
 export function InvestigationProgress({ job, running, pauseReason, resume, pause, cancel }: { job: Job; running: boolean; pauseReason: string | null; resume: () => void; pause: () => void; cancel: () => void }) {
   const isTerminal = terminal(job);
   const recent = job.events.slice(-4);
+  const searchMode = job.searchMode ?? 'legacy';
+  const searchStop = searchMode === 'expanded'
+    ? 'The permitted evidence checks for this run are finished. Remaining venue requirements still need confirmation.'
+    : searchMode === 'conserve'
+      ? 'This investigation reached its credit-conserving search limit. Remaining venue requirements still need confirmation.'
+      : reasons.search_budget_exhausted;
   return <section className="progress-panel" aria-labelledby="progress-heading">
     <div className="section-heading"><div><span className="eyebrow">Bounded investigation</span><h2 id="progress-heading" aria-live="polite" aria-atomic="true">{stages[job.phase] ?? 'Retrieving venue evidence'}</h2></div><span className={`status-badge ${running ? 'active' : 'neutral'}`}>{running ? 'In progress' : isTerminal ? job.phase === 'partial' ? 'Partial' : job.phase === 'cancelled' ? 'Stopped' : 'Complete' : 'Paused'}</span></div>
     <div className="progress-stats">
@@ -19,10 +25,16 @@ export function InvestigationProgress({ job, running, pauseReason, resume, pause
       <div><strong>{job.appCacheHits}</strong><span>App cache reuses</span></div>
     </div>
     <p className="small muted">Search attempts are a conservative allowance count, not exact billed credits. Extraction: {job.llmAttempts} / {job.llmCap} attempts.</p>
+    <p className="small search-policy">{searchMode === 'expanded'
+      ? <><strong>Full bounded investigation.</strong> The account allowance was above 50 when this limit was set. Up to {job.searchCap} searches; the run finishes earlier when evidence is sufficient or no eligible checks remain.</>
+      : searchMode === 'conserve'
+        ? <><strong>Credit-conserving investigation.</strong> Up to {job.searchCap} searches because the allowance is 50 or fewer, or a fresh balance could not be confirmed.</>
+        : <><strong>Saved investigation.</strong> This run keeps its original search limit. Start a new investigation to use the current account policy.</>}</p>
+    {job.effectiveProviderRemaining != null && <p className="small muted">Conservative remaining allowance estimate: {job.effectiveProviderRemaining}. Based on the saved account check and later reserved attempts; not a live balance.</p>}
     {job.lastKnownProviderRemaining !== null && <p className="small muted">Last known provider allowance: {job.lastKnownProviderRemaining}, checked {formatDate(job.allowanceCheckedAt, true)}. This is a saved account check, not a live balance.</p>}
     {job.remainingAction && !isTerminal && <p className="next-action"><strong>Permitted next action</strong> {job.remainingAction}</p>}
     {recent.length > 0 && <ol className="action-trace" aria-label="Recent investigation actions">{recent.map((event, index) => <li key={`${event.createdAt}-${index}`}><span className="trace-line" aria-hidden="true"/><span>{event.message || event.type.replaceAll('_', ' ')}<time className="trace-date" dateTime={event.createdAt}>{formatDate(event.createdAt, true)}</time></span></li>)}</ol>}
-    {job.stopReason && <p className="stop-note">{reasons[job.stopReason] ?? job.stopReason.replaceAll('_', ' ')}</p>}
+    {job.stopReason && <p className="stop-note">{job.stopReason === 'search_budget_exhausted' ? searchStop : reasons[job.stopReason] ?? job.stopReason.replaceAll('_', ' ')}</p>}
     {pauseReason && !isTerminal && <p className="pause-note" role="status">{pauseReason}</p>}
     {job.nextRetryAt && !isTerminal && <p className="small">Earliest retry: <time dateTime={job.nextRetryAt}>{formatDate(job.nextRetryAt, true)}</time></p>}
     {!isTerminal && <><div className="button-row">{running ? <button type="button" className="button secondary" onClick={pause}>Pause after this step</button> : <button type="button" className="button primary" onClick={resume}>Resume investigation <span aria-hidden="true">→</span></button>}<button type="button" className="text-button danger" onClick={cancel}>Cancel further checks</button></div><p className="small muted">You can return to this investigation; it continues while this page is open. Completed steps are saved.</p></>}

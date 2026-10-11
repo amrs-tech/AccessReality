@@ -65,4 +65,5 @@ export interface PublicJob {
   sourceCount: number; reviewsExamined: number; events: { id?: string; type: string; message: string; createdAt: string }[];
   stopReason: string | null; nextRetryAt: string | null; canResume: boolean; remainingAction: string | null;
   discoveryJobId: string | null; candidateId: string | null; lastKnownProviderRemaining: number | null; allowanceCheckedAt: string | null;
+  searchMode?: 'expanded' | 'conserve' | 'legacy'; effectiveProviderRemaining?: number | null;
 }

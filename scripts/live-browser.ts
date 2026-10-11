@@ -42,7 +42,10 @@ run(async () => {
   const before = await adminPreflight();
   const client = db();
   const allocationBefore = await client.from('budget_buckets').select('reserved_units,limit_units,enabled').eq('id', 'allocation:verification:serpapi').single();
-  gate(!allocationBefore.error && allocationBefore.data?.enabled && allocationBefore.data.limit_units <= 30 && allocationBefore.data.limit_units - allocationBefore.data.reserved_units >= 6, 'verification_allocation_insufficient_room_for_six_max30');
+  // This script selects two must-haves: discovery + two baseline checks +
+  // at most three distinct checks per feature. Retries still share the SQL30 cap.
+  const plannedSearchRoom = 1 + Math.min(8, e.INVESTIGATION_SEARCH_CAP);
+  gate(!allocationBefore.error && allocationBefore.data?.enabled && allocationBefore.data.limit_units <= 30 && allocationBefore.data.limit_units - allocationBefore.data.reserved_units >= plannedSearchRoom, 'verification_allocation_insufficient_for_planned_run_max30');
   gate(scan.matchingApiBodies === 0, 'secret_in_preflight_response');
 
   const stamp = Date.now();
@@ -150,7 +153,7 @@ run(async () => {
     const deadline = runStartedAt + 180_000;
     while (Date.now() < deadline) {
       latestJob = await jobGet(ownerJobId);
-      gate(stepRequests.filter(step => step.jobId === ownerJobId).length <= 20, 'browser_step_limit_exceeded');
+      gate(stepRequests.filter(step => step.jobId === ownerJobId).length <= e.MAX_WORKFLOW_STEPS, 'browser_step_limit_exceeded');
       if (terminal(latestJob)) break;
       const resume = page.getByRole('button', { name: 'Resume investigation' });
       if (await resume.isVisible()) {
@@ -233,10 +236,12 @@ run(async () => {
     record.allowanceAfter = after.account.remaining;
     record.verificationReservedAfter = allocationAfter.data.reserved_units;
     record.verificationAttemptsAdded = allocationAfter.data.reserved_units - allocationBefore.data.reserved_units;
-    gate(allocationAfter.data.reserved_units <= 30 && allocationAfter.data.reserved_units - allocationBefore.data.reserved_units <= 6, 'browser_verification_allocation_gate_exceeded');
+    gate(allocationAfter.data.reserved_units <= 30 && allocationAfter.data.reserved_units - allocationBefore.data.reserved_units <= allocationBefore.data.limit_units - allocationBefore.data.reserved_units, 'browser_verification_allocation_gate_exceeded');
     record.providerAttempts = discoveryJob.providerAttempts + latestJob.providerAttempts;
     record.appCacheHits = discoveryJob.appCacheHits + latestJob.appCacheHits;
     record.llmAttempts = latestJob.llmAttempts;
+    record.searchPolicyMode = latestJob.searchMode;
+    record.effectiveSearchCap = latestJob.searchCap;
     record.browserStepRequests = stepRequests.filter(step => step.jobId === ownerJobId).length;
     await Promise.all([...bodyReads]);
     gate(scan.staticBodies > 0 && scan.apiBodies > 0, 'actual_browser_bodies_not_scanned');

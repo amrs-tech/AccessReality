@@ -5,6 +5,14 @@ export interface SerpApiOptions { apiKey: string; fetch?: typeof fetch; now?: ()
 export interface SerpApiResult { payload: Record<string, unknown>; providerSearchId: string | null; retrievedAt: string; durationMs: number }
 const ALLOWED_PARAMS = new Set(["engine", "type", "q", "hl", "gl", "place_id", "data_cid", "data_id", "sort_by", "query", "num", "next_page_token"]);
 function retryAfter(value: string | null): number | null { if (!value) return null; const n = Number(value); return Number.isFinite(n) && n >= 0 ? Math.min(n, 60) : null; }
+function completedEmptyGoogleSearch(payload: Record<string, unknown>, engine: string): boolean {
+  // SerpApi documents this exact HTTP-200 shape as Success with empty organic results.
+  // https://serpapi.com/api-status-and-error-codes
+  return engine === "google" && payload.error === "Google hasn't returned any results for this query."
+    && object(payload.search_metadata)?.status === "Success"
+    && object(payload.search_information)?.organic_results_state === "Fully empty"
+    && (payload.organic_results === undefined || (Array.isArray(payload.organic_results) && payload.organic_results.length === 0));
+}
 async function request(endpoint: "search" | "account", params: Record<string, string>, options: SerpApiOptions): Promise<SerpApiResult> {
   if (!options.apiKey) throw new ProviderError("configuration", "SerpApi is not configured");
   const url = new URL(endpoint === "search" ? "https://serpapi.com/search.json" : "https://serpapi.com/account.json");
@@ -27,8 +35,9 @@ async function request(endpoint: "search" | "account", params: Record<string, st
     } else body = await response.text();
     let payload: Record<string, unknown> | null; try { payload = object(JSON.parse(body)); } catch { throw new ProviderError("schema_drift", "SerpApi returned invalid JSON"); }
     if (!payload) throw new ProviderError("schema_drift", "SerpApi returned a non-object response");
-    if (payload.error !== undefined) throw new ProviderError("provider_error", "SerpApi reported an upstream error");
-    return { payload: endpoint === "account" ? payload : sanitizePayload(payload), providerSearchId: string(object(payload.search_metadata)?.id, 100), retrievedAt: (options.now?.() ?? new Date()).toISOString(), durationMs: Date.now() - started };
+    const emptyGoogle = endpoint === "search" && completedEmptyGoogleSearch(payload, params.engine);
+    if (payload.error !== undefined && !emptyGoogle) throw new ProviderError("provider_error", "SerpApi reported an upstream error");
+    return { payload: endpoint === "account" ? payload : sanitizePayload(emptyGoogle ? { ...payload, organic_results: [] } : payload), providerSearchId: string(object(payload.search_metadata)?.id, 100), retrievedAt: (options.now?.() ?? new Date()).toISOString(), durationMs: Date.now() - started };
     })(), deadline]);
   } catch (error) {
     if (error instanceof ProviderError) throw error;
@@ -50,7 +59,12 @@ function sanitizedPlace(value: unknown): unknown {
 export function sanitizePayload(payload: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { search_metadata: { id: string(object(payload.search_metadata)?.id, 100), status: string(object(payload.search_metadata)?.status, 100) } };
   const information = object(payload.search_information);
-  if (information?.reviews_results_state !== undefined) out.search_information = { reviews_results_state: string(information.reviews_results_state, 100) };
+  if (information) {
+    const markers: Record<string, unknown> = {};
+    if (information.reviews_results_state !== undefined) markers.reviews_results_state = string(information.reviews_results_state, 100);
+    if (information.organic_results_state !== undefined) markers.organic_results_state = string(information.organic_results_state, 100);
+    if (Object.keys(markers).length) out.search_information = markers;
+  }
   if (payload.local_results !== undefined) out.local_results = Array.isArray(payload.local_results) ? payload.local_results.slice(0, 5).map(sanitizedPlace) : null;
   if (payload.place_results !== undefined) out.place_results = sanitizedPlace(payload.place_results);
   if (payload.reviews !== undefined) out.reviews = Array.isArray(payload.reviews) ? payload.reviews.slice(0, 20).map((item) => { const r = object(item); if (!r) return null;

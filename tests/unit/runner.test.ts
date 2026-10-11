@@ -2,24 +2,24 @@ import { it,expect,vi,beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { JobRow } from '../../lib/workflow/state';
 import { initialState } from '../../lib/workflow/state';
-import type { Venue } from '../../lib/contracts';
-import { advanceJob } from '../../lib/workflow/runner';
+import { FEATURES,type Venue } from '../../lib/contracts';
+import { advanceJob,buildReport,eligibleMenu } from '../../lib/workflow/runner';
 import { ProviderError } from '../../lib/providers/errors';
 import { normalizeDetails } from '../../lib/adapters/place';
 import { makeSource } from '../../lib/evidence/normalize';
-const mock = vi.hoisted(()=>({job:null as any,deny:false,down:false,calls:[] as string[],cacheReply:null as any,commits:[] as any[]}));
-vi.mock('../../lib/server/db',()=>({db:vi.fn(),selectOne:vi.fn(async()=>mock.job),rpc:vi.fn(async(name:string,args:any)=>{
+const mock = vi.hoisted(()=>({job:null as any,deny:false,markDenial:null as string|null,down:false,calls:[] as string[],cacheReply:null as any,savedCache:null as any,commits:[] as any[]}));
+vi.mock('../../lib/server/db',()=>({db:vi.fn(),selectOne:vi.fn(async(table:string)=>table==='provider_cache'?mock.savedCache:mock.job),rpc:vi.fn(async(name:string,args:any)=>{
   mock.calls.push(name);if(mock.down)throw new Error('Database unavailable');
   if(name==='claim_step')return {ok:true,job:structuredClone(mock.job),lease_token:'test-lease'};
   if(name==='reserve_provider_attempt'){if(mock.deny)return {ok:false,code:'budget_exhausted'};if(mock.cacheReply)return {ok:true,kind:'cache',...mock.cacheReply};if(args.p_provider==='serpapi')mock.job.serp_reserved++;else mock.job.llm_reserved++;return {ok:true,kind:'reserved',attempt_id:randomUUID()};}
-  if(name==='mark_dispatch')return {ok:true};
+  if(name==='mark_dispatch')return mock.markDenial?{ok:false,code:mock.markDenial}:{ok:true};
   if(name==='commit_step'||name==='fail_step'){mock.commits.push(args);mock.job={...mock.job,state:args.p_state,phase:args.p_uncertain?'partial':args.p_phase,state_version:mock.job.state_version+1,stop_reason:args.p_stop_reason||args.p_code||null};return {ok:true,job:structuredClone(mock.job)};}
   throw new Error(name);
 })}));
 const venue:Venue={id:'00000000-0000-4000-8000-000000000002',name:'Synthetic test venue',address:'Test street',googlePlaceId:'test-place-only',dataId:'test-review-only',dataCid:null,website:null,phone:null,category:null,sourceUrl:'https://example.test',latitude:null,longitude:null,rating:null,provisional:false};
 beforeEach(()=>{
   Object.assign(process.env,{SERPAPI_API_KEY:'test-only',GEMINI_API_KEY:'test-only',SUPABASE_URL:'https://example.supabase.co',SUPABASE_SERVICE_ROLE_KEY:'test-only',DEMO_ACCESS_CODE:'test-code',ADMIN_API_SECRET:'a'.repeat(32),SESSION_HMAC_SECRET:'b'.repeat(32),RATE_LIMIT_HMAC_SECRET:'c'.repeat(32),APP_ORIGIN:'http://localhost:3000',SEARCH_ENABLED:'true'});
-  mock.calls=[];mock.commits=[];mock.cacheReply=null;mock.deny=false;mock.down=false;mock.job={id:randomUUID(),session_id:'test-session',kind:'investigation',venue_id:venue.id,input:{},state:initialState([{feature:'entrance_step_free',priority:'must_have'}],venue),phase:'details',state_version:0,serp_cap:5,serp_reserved:0,llm_cap:6,llm_reserved:0,next_retry_at:null,stop_reason:null} satisfies JobRow;
+  mock.calls=[];mock.commits=[];mock.cacheReply=null;mock.savedCache=null;mock.deny=false;mock.markDenial=null;mock.down=false;mock.job={id:randomUUID(),session_id:'test-session',kind:'investigation',venue_id:venue.id,input:{},state:initialState([{feature:'entrance_step_free',priority:'must_have'}],venue),phase:'details',state_version:0,serp_cap:5,serp_reserved:0,llm_cap:6,llm_reserved:0,next_retry_at:null,stop_reason:null} satisfies JobRow;
 });
 const deps=()=>({client:{from:()=>{throw new Error('Empty corpus must not query source tables');}} as any,clock:()=>new Date('2026-10-10T10:00:00Z')});
 it('budget denial causes zero actual provider dispatches',async()=>{
@@ -74,4 +74,113 @@ it('a search cap preserves an independently incomplete extraction as partial',as
   const finished=await advanceJob('test-session',mock.job.id,1,deps());
   expect(finished.phase).toBe('partial');expect(finished.state.report?.overall).toBe('needs_confirmation');expect(finished.state.failedStages).toContain('extraction_validation_rejected');
   expect(mock.calls).not.toContain('reserve_provider_attempt');
+});
+it('expanded evidence checks cover every must-have despite empty results and an early planner STOP',async()=>{
+  Object.assign(mock.job,{serp_cap:26,serp_full_cap:26,llm_cap:56,step_cap:128,search_mode:'expanded'});
+  mock.job.state.requirements=[{feature:'entrance_step_free',priority:'must_have'},{feature:'interior_movement',priority:'must_have'},{feature:'accessible_restroom',priority:'must_have'}];
+  const search=vi.fn(async(params:Record<string,string>)=>({payload:params.engine==='google_maps_reviews'?{reviews:[]}:params.engine==='google'?{organic_results:[]}:{place_results:{title:venue.name,place_id:venue.googlePlaceId,data_id:venue.dataId}},providerSearchId:'synthetic-only',retrievedAt:'2026-10-10T10:00:00Z',durationMs:1}));
+  const plan=vi.fn(async(menu:any[])=>({action:menu.find(a=>a.id==='STOP'),reason:'Synthetic early stop',plannerMode:'gemini' as const}));
+  let result=mock.job;let steps=0;
+  while(!['complete','partial'].includes(result.phase)&&steps++<128){const before=search.mock.calls.length+plan.mock.calls.length;result=await advanceJob('test-session',result.id,result.state_version,{...deps(),search,plan});expect(search.mock.calls.length+plan.mock.calls.length-before).toBeLessThanOrEqual(1);}
+  expect(result.phase).toBe('complete');expect(result.serp_reserved).toBe(8);expect(result.state.noNewEvidence).toBeGreaterThanOrEqual(2);
+  for(const feature of ['entrance_step_free','interior_movement','accessible_restroom']){
+    expect(result.state.visitedActionKeys).toContain(`SEARCH_REVIEWS_FEATURE:${feature}`);
+    expect(result.state.visitedActionKeys).toContain(`SEARCH_WEB_FEATURE:${feature}:general`);
+  }
+  expect(result.state.report?.overall).toBe('needs_confirmation');expect(result.state.report?.isPartial).toBe(false);
+});
+it('expanded actions give untouched requirements a turn before repeating another feature',()=>{
+  Object.assign(mock.job,{search_mode:'expanded',serp_cap:26,llm_cap:56});
+  mock.job.state.requirements=[{feature:'entrance_step_free',priority:'must_have'},{feature:'accessible_restroom',priority:'must_have'}];
+  mock.job.state.report=buildReport(mock.job,new Date('2026-10-10T10:00:00Z'));
+  mock.job.state.visitedActionKeys=['SEARCH_REVIEWS_FEATURE:entrance_step_free'];
+  const menu=eligibleMenu(mock.job);expect(menu.length).toBeGreaterThan(0);expect(menu.every(a=>a.feature==='accessible_restroom')).toBe(true);
+  expect(menu.some(a=>a.id.endsWith(':venue_domain'))).toBe(false);
+  const cacheCandidates=eligibleMenu(mock.job,true);expect(cacheCandidates.some(a=>a.feature==='entrance_step_free')).toBe(true);
+  mock.job.search_mode='conserve';mock.job.serp_full_cap=26;mock.job.state.reviewRequests=8;mock.job.state.webRequests=8;
+  expect(eligibleMenu(mock.job,true).some(a=>a.feature==='entrance_step_free')).toBe(true);
+});
+it('all eight unresolved features have a finite 26-search run within the enlarged step budget',async()=>{
+  Object.assign(mock.job,{serp_cap:26,serp_full_cap:26,llm_cap:56,step_cap:128,search_mode:'expanded'});
+  mock.job.state.requirements=FEATURES.map(feature=>({feature,priority:'must_have'}));
+  const search=vi.fn(async(params:Record<string,string>)=>({payload:params.engine==='google_maps_reviews'?{reviews:[]}:params.engine==='google'?{organic_results:[]}:{place_results:{title:venue.name,place_id:venue.googlePlaceId,data_id:venue.dataId,website:'https://synthetic.example'}},providerSearchId:'synthetic-only',retrievedAt:'2026-10-10T10:00:00Z',durationMs:1}));
+  const plan=vi.fn(async(menu:any[])=>({action:menu[0],reason:'Synthetic permitted action',plannerMode:'gemini' as const}));
+  let result=mock.job;let steps=0;
+  while(!['complete','partial'].includes(result.phase)&&steps++<128)result=await advanceJob('test-session',result.id,result.state_version,{...deps(),search,plan});
+  expect(result.phase).toBe('complete');expect(search).toHaveBeenCalledTimes(26);expect(result.state.steps).toBeLessThan(128);
+  expect(result.state.visitedActionKeys.filter((id:string)=>id.startsWith('SEARCH_'))).toHaveLength(24);
+  expect(result.state.report?.overall).toBe('needs_confirmation');expect(result.state.report?.isPartial).toBe(false);
+});
+it('an unexpired cache at the search cap runs without a search or planner dispatch',async()=>{
+  mock.job.phase='assess';mock.job.serp_reserved=5;mock.job.state.reviewRequests=2;
+  mock.savedCache={sanitized_payload:{organic_results:[]},expires_at:'2026-10-11T10:00:00Z'};
+  mock.cacheReply={payload:{organic_results:[]},retrieved_at:'2026-10-10T10:00:00Z'};
+  const search=vi.fn(),plan=vi.fn();
+  let result=await advanceJob('test-session',mock.job.id,0,{...deps(),search,plan});expect(result.phase).toBe('plan');
+  result=await advanceJob('test-session',result.id,result.state_version,{...deps(),search,plan});expect(result.phase).toBe('targeted_search');
+  result=await advanceJob('test-session',result.id,result.state_version,{...deps(),search,plan});
+  expect(result.phase).toBe('extract');expect(result.state.cacheHits).toBe(1);expect(result.serp_reserved).toBe(5);
+  expect(search).not.toHaveBeenCalled();expect(plan).not.toHaveBeenCalled();
+});
+it('a denied optional search saves complete unknown evidence without fabricating a failed stage',async()=>{
+  mock.job.phase='targeted_search';mock.job.state.pendingAction={id:'SEARCH_REVIEWS_FEATURE:entrance_step_free',feature:'entrance_step_free',reason:'Synthetic follow-up'};mock.deny=true;
+  const search=vi.fn();let result=await advanceJob('test-session',mock.job.id,0,{...deps(),search});
+  expect(result.phase).toBe('finalize');expect(result.state.failedStages).toEqual([]);expect(result.state.report?.isPartial).toBe(false);
+  result=await advanceJob('test-session',result.id,result.state_version,{...deps(),search});
+  expect(result.phase).toBe('complete');expect(result.stop_reason).toBe('search_budget_exhausted');expect(search).not.toHaveBeenCalled();
+});
+it('an optional reservation released at the dispatch credit check preserves a complete evidence report',async()=>{
+  mock.job.phase='targeted_search';mock.job.state.pendingAction={id:'SEARCH_REVIEWS_FEATURE:entrance_step_free',feature:'entrance_step_free',reason:'Synthetic follow-up'};mock.markDenial='budget_exhausted';
+  const search=vi.fn();let result=await advanceJob('test-session',mock.job.id,0,{...deps(),search});
+  expect(mock.calls).toContain('reserve_provider_attempt');expect(mock.calls).toContain('mark_dispatch');
+  expect(mock.commits[0].p_attempt_id).toBeTruthy();expect(mock.commits[0].p_uncertain).toBe(false);
+  expect(result.state.pendingAction).toBeNull();expect(result.state.failedStages).toEqual([]);expect(result.state.report?.isPartial).toBe(false);expect(search).not.toHaveBeenCalled();
+  result=await advanceJob('test-session',result.id,result.state_version,{...deps(),search});
+  expect(result.phase).toBe('complete');expect(result.stop_reason).toBe('search_budget_exhausted');expect(result.state.report?.overall).toBe('needs_confirmation');
+});
+it('a released optional reservation from the search kill switch stays an incomplete run',async()=>{
+  mock.job.phase='targeted_search';mock.job.state.pendingAction={id:'SEARCH_REVIEWS_FEATURE:entrance_step_free',feature:'entrance_step_free',reason:'Synthetic follow-up'};mock.markDenial='search_disabled';
+  const search=vi.fn();const result=await advanceJob('test-session',mock.job.id,0,{...deps(),search});
+  expect(mock.commits[0].p_uncertain).toBe(false);expect(result.state.failedStages).toContain('targeted_search:search_disabled');expect(result.state.report?.isPartial).toBe(true);expect(search).not.toHaveBeenCalled();
+});
+it('a baseline dispatch budget denial remains incomplete because a required check was not performed',async()=>{
+  mock.markDenial='budget_exhausted';const search=vi.fn();const result=await advanceJob('test-session',mock.job.id,0,{...deps(),search});
+  expect(mock.commits[0].p_uncertain).toBe(false);expect(result.state.failedStages).toContain('details:budget_exhausted');expect(result.state.report?.isPartial).toBe(true);expect(search).not.toHaveBeenCalled();
+});
+it('an actually dispatched optional timeout remains consumed, ambiguous and partial',async()=>{
+  mock.job.phase='targeted_search';mock.job.state.pendingAction={id:'SEARCH_REVIEWS_FEATURE:entrance_step_free',feature:'entrance_step_free',reason:'Synthetic follow-up'};
+  const search=vi.fn(async()=>{throw new ProviderError('timeout','Synthetic dispatched timeout',false,true);});
+  const result=await advanceJob('test-session',mock.job.id,0,{...deps(),search});
+  expect(search).toHaveBeenCalledTimes(1);expect(result.phase).toBe('partial');expect(result.serp_reserved).toBe(1);expect(mock.commits[0].p_uncertain).toBe(true);expect(result.state.report?.isPartial).toBe(true);
+});
+it('the last permitted step commits the report directly without requiring another lease',async()=>{
+  Object.assign(mock.job,{phase:'assess',step_cap:128,serp_full_cap:26,search_mode:'expanded'});mock.job.state.steps=127;
+  const result=await advanceJob('test-session',mock.job.id,0,deps());
+  expect(result.phase).toBe('complete');expect(result.stop_reason).toBe('time_limit');expect(mock.commits[0].p_report.report.overall).toBe('needs_confirmation');
+  expect(mock.calls).not.toContain('reserve_provider_attempt');
+});
+it('a workflow limit with unprocessed exact sources commits a truthful partial report',async()=>{
+  mock.job.phase='extract';mock.job.state.steps=19;
+  mock.job.state.sources=[makeSource({venueId:venue.id,kind:'maps_review',text:'The entrance has stairs.',sourceUrl:null,providerReviewId:'synthetic-review',providerSearchId:'synthetic-only',engine:'google_maps_reviews',retrievedAt:'2026-10-10T10:00:00Z',publishedAt:null,editedAt:null,observedAt:null,selectionMethod:'newest',metadata:{venueMatch:'exact'}})];
+  const extract=vi.fn();const result=await advanceJob('test-session',mock.job.id,0,{...deps(),extract});
+  expect(result.phase).toBe('partial');expect(result.state.failedStages).toContain('unprocessed_sources_workflow_limit');expect(mock.commits[0].p_report.report.isPartial).toBe(true);expect(extract).not.toHaveBeenCalled();
+});
+it('credit refresh finishes before the transactional step lease is claimed',async()=>{
+  mock.job.phase='finalize';const refreshCredits=vi.fn(async()=>{expect(mock.calls).toEqual([]);});
+  await advanceJob('test-session',mock.job.id,0,{...deps(),refreshCredits});expect(refreshCredits).toHaveBeenCalledTimes(1);expect(mock.calls[0]).toBe('claim_step');
+});
+it('a delayed credit refresh never marks an undispatched search as an ambiguous provider request',async()=>{
+  let elapsed=0;const clock=vi.spyOn(Date,'now').mockImplementation(()=>elapsed);const search=vi.fn();
+  try {
+    await advanceJob('test-session',mock.job.id,0,{...deps(),search,refreshCredits:async()=>{elapsed=19000;}});
+    expect(mock.calls).not.toContain('mark_dispatch');expect(search).not.toHaveBeenCalled();expect(mock.commits[0].p_uncertain).toBe(false);
+  } finally {clock.mockRestore();}
+});
+it('an expanded corpus keeps its larger bound after credit conservation activates',async()=>{
+  Object.assign(mock.job,{search_mode:'conserve',serp_cap:5,serp_full_cap:26,llm_cap:56,step_cap:128});
+  mock.job.state.sources=Array.from({length:64},(_,n)=>makeSource({venueId:venue.id,kind:'maps_review',text:`Synthetic source ${n}.`,sourceUrl:null,providerReviewId:`synthetic-${n}`,providerSearchId:'synthetic-only',engine:'google_maps_reviews',retrievedAt:'2026-10-10T10:00:00Z',publishedAt:null,editedAt:null,observedAt:null,selectionMethod:'newest',metadata:{venueMatch:'exact'}}));
+  const client={from:()=>{const chain:any={select:()=>chain,eq:()=>chain,in:async()=>({data:[],error:null})};return chain;}} as any;
+  const search=vi.fn(async()=>({payload:{place_results:{title:venue.name,place_id:venue.googlePlaceId,extensions:[{accessibility:['Wheelchair accessible entrance']}]}},providerSearchId:'synthetic-only',retrievedAt:'2026-10-10T10:00:00Z',durationMs:1}));
+  const result=await advanceJob('test-session',mock.job.id,0,{client,search});
+  expect(result.state.sources).toHaveLength(65);expect(result.state.failedStages).not.toContain('corpus_limit');expect(result.state.claims).toHaveLength(1);
 });

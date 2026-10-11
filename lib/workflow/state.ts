@@ -13,6 +13,7 @@ export interface JobState {
 export interface JobRow {
   id:string; session_id:string;kind:'discovery'|'investigation';venue_id:string|null;input:any;state:JobState;
   phase:Phase|'discovery';state_version:number;serp_cap:number;serp_reserved:number;llm_cap:number;llm_reserved:number;
+  serp_full_cap?:number;search_mode?:'expanded'|'conserve'|'legacy';step_cap?:number;
   next_retry_at:string|null;stop_reason:string|null;
 }
 export function initialState(requirements:Requirements=[],venue:Venue|null=null):JobState {

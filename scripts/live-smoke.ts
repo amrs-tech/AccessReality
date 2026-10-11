@@ -19,12 +19,13 @@ run(async()=>{
   const before=await api('/api/admin/preflight','POST',{probeLlm:true},true);
   if(!before.verificationMode)throw Object.assign(new Error(),{code:'server_not_in_verification_allocation'});
   const client=db();const {data:allocation,error}=await client.from('budget_buckets').select('reserved_units,limit_units').eq('id','allocation:verification:serpapi').single();
-  if(error||allocation.reserved_units+6>allocation.limit_units)throw Object.assign(new Error(),{code:'verification_allocation_insufficient_max30'});
+  const plannedSearchRoom=1+Math.min(8,e.INVESTIGATION_SEARCH_CAP);
+  if(error||allocation.reserved_units+plannedSearchRoom>allocation.limit_units)throw Object.assign(new Error(),{code:'verification_allocation_insufficient_max30'});
   await api('/api/session');await api('/api/session','POST',{accessCode:e.DEMO_ACCESS_CODE});
   async function finish(id:string) {
     let job=await api(`/api/jobs/${id}`);let calls=0;
     while(!['complete','partial','cancelled'].includes(job.phase)) {
-      if(++calls>20)throw Object.assign(new Error(),{code:'step_limit'});
+      if(++calls>e.MAX_WORKFLOW_STEPS)throw Object.assign(new Error(),{code:'step_limit'});
       if(job.nextRetryAt){const delay=Date.parse(job.nextRetryAt)-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,Math.min(delay,60000)));}
       job=await api(`/api/jobs/${id}/step`,'POST',{expectedVersion:job.stateVersion});
       console.log(JSON.stringify({jobId:id,phase:job.phase,providerAttempts:job.providerAttempts,appCacheHits:job.appCacheHits}));

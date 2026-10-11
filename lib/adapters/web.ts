@@ -10,7 +10,14 @@ export function webParams(venue: Venue, feature: Feature, ownedDomain = false): 
   return { engine: "google", q: query.filter(Boolean).join(" "), gl: "in", hl: "en" };
 }
 export function normalizeWeb(payload: unknown, venue: Venue, retrievedAt: string, providerSearchId: string | null): Source[] {
-  const data = object(payload); if (!data || !Array.isArray(data.organic_results)) throw new ProviderError("schema_drift", "Web response is missing organic_results");
+  const data = object(payload);
+  if (data?.error !== undefined) {
+    if (data.error === "Google hasn't returned any results for this query." && object(data.search_metadata)?.status === "Success"
+      && object(data.search_information)?.organic_results_state === "Fully empty"
+      && (data.organic_results === undefined || (Array.isArray(data.organic_results) && data.organic_results.length === 0))) return [];
+    throw new ProviderError("provider_error", "Web search returned an unrecognized error");
+  }
+  if (!data || !Array.isArray(data.organic_results)) throw new ProviderError("schema_drift", "Web response is missing organic_results");
   return data.organic_results.slice(0, 8).flatMap((item) => {
     const result = object(item); if (!result) return []; const snippet = string(result.snippet, 8000), title = string(result.title, 300); if (!snippet) return [];
     return [makeSource({ venueId: venue.id, kind: "search_snippet", text: snippet, sourceUrl: string(result.link, 2048), providerReviewId: null, providerSearchId, engine: "google", retrievedAt,

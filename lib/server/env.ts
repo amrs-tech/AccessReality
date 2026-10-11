@@ -7,10 +7,11 @@ export const envSchema = z.object({
   SEARCH_ENABLED:z.enum(['true','false']).default('false'),
   SERPAPI_PROTECTED_RESERVE:z.coerce.number().int().nonnegative().default(30),
   SERPAPI_OPERATIONAL_CAP:z.coerce.number().int().nonnegative().default(220),
-  SERPAPI_DAILY_ATTEMPT_CAP:z.coerce.number().int().min(0).max(30).default(30),
-  INVESTIGATION_SEARCH_CAP:z.coerce.number().int().min(0).max(5).default(5),
-  INVESTIGATION_LLM_CAP:z.coerce.number().int().min(0).max(6).default(6),
-  MAX_WORKFLOW_STEPS:z.coerce.number().int().min(1).max(20).default(20),
+  SERPAPI_DAILY_ATTEMPT_CAP:z.coerce.number().int().min(0).max(60).default(60),
+  SERPAPI_SESSION_ATTEMPT_CAP:z.coerce.number().int().min(0).max(64).default(64),
+  INVESTIGATION_SEARCH_CAP:z.coerce.number().int().min(0).max(26).default(26),
+  INVESTIGATION_LLM_CAP:z.coerce.number().int().min(0).max(56).default(56),
+  MAX_WORKFLOW_STEPS:z.coerce.number().int().min(1).max(128).default(128),
 });
 export type Env = z.infer<typeof envSchema>;
 export function env(): Env {

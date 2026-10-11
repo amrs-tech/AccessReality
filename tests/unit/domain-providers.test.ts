@@ -3,6 +3,7 @@ import { serpapiSearch, inspectAccount } from "../../lib/providers/serpapi";
 import { extractClaims, chooseAction, probeGemini, EXTRACTION_PROMPT_VERSION, type GeminiClient } from "../../lib/providers/gemini";
 import { validateExtractedClaims, EXTRACTOR_VERSION } from "../../lib/evidence/validate";
 import { makeSource } from "../../lib/evidence/normalize";
+import { normalizeWeb } from "../../lib/adapters/web";
 import { stopAction } from "../../lib/workflow/actions";
 import type { Venue } from "../../lib/contracts";
 const venue: Venue = { id: "synthetic-venue", name: "Synthetic", address: "Synthetic Street", googlePlaceId: "id", dataCid: null, dataId: null, website: null, phone: null, category: null, sourceUrl: null, latitude: null, longitude: null, rating: null, provisional: false };
@@ -19,6 +20,36 @@ describe("server-only SerpApi fixed-endpoint adapter", () => {
   it("missing key and forbidden params dispatch zero requests", async () => { const fetcher = fakeFetch({}); await expect(serpapiSearch({ engine: "google" }, { apiKey: "", fetch: fetcher })).rejects.toMatchObject({ code: "configuration" }); await expect(serpapiSearch({ engine: "google", api_key: "client override" }, { apiKey: "test", fetch: fetcher })).rejects.toMatchObject({ code: "configuration" }); expect(fetcher).not.toHaveBeenCalled(); });
   it.each([[403, "forbidden", false], [429, "quota", true], [503, "upstream", true]])("HTTP %s is distinct with no serial retry", async (status, code, retryable) => { const fetcher = fakeFetch({}, status as number); await expect(serpapiSearch({ engine: "google" }, { apiKey: "test", fetch: fetcher })).rejects.toMatchObject({ code, retryable }); expect(fetcher).toHaveBeenCalledTimes(1); });
   it("provider error is distinct from empty valid results", async () => { await expect(serpapiSearch({ engine: "google" }, { apiKey: "test", fetch: fakeFetch({ error: "Account API key test-secret is invalid" }) })).rejects.toMatchObject({ code: "provider_error", message: "SerpApi reported an upstream error" }); const r = await serpapiSearch({ engine: "google" }, { apiKey: "test", fetch: fakeFetch({ organic_results: [] }) }); expect(r.payload.organic_results).toEqual([]); });
+  it.each([undefined, []])("the documented successful empty Google response normalizes without evidence: %j", async (organicResults) => {
+    const payload = { search_metadata: { id: "synthetic-empty-search", status: "Success", json_endpoint: "https://synthetic.example/?api_key=private" }, search_information: { organic_results_state: "Fully empty", query_displayed: "private query" }, search_parameters: { api_key: "private" }, error: "Google hasn't returned any results for this query.", ...(organicResults === undefined ? {} : { organic_results: organicResults }) };
+    const fetcher = fakeFetch(payload); const result = await serpapiSearch({ engine: "google", q: "synthetic query" }, { apiKey: "test", fetch: fetcher });
+    expect(fetcher).toHaveBeenCalledTimes(1); expect(result.providerSearchId).toBe("synthetic-empty-search");
+    expect(result.payload).toEqual({ search_metadata: { id: "synthetic-empty-search", status: "Success" }, search_information: { organic_results_state: "Fully empty" }, organic_results: [] });
+    expect(normalizeWeb(result.payload, venue, source.retrievedAt, result.providerSearchId)).toEqual([]);
+    expect(normalizeWeb(payload, venue, source.retrievedAt, result.providerSearchId)).toEqual([]); expect(JSON.stringify(result.payload)).not.toContain("private");
+  });
+  it.each([
+    { search_metadata: { status: "Processing" } },
+    { search_metadata: { status: "Error" } },
+    { search_metadata: {} },
+    { search_information: { organic_results_state: "Results for exact spelling" } },
+    { search_information: {} },
+    { organic_results: null },
+    { organic_results: {} },
+    { organic_results: [{ snippet: "A result contradicts the empty marker." }] },
+    { error: "Your account has run out of searches." },
+    { error: "Google hasn't returned any results for this query" },
+  ])("inconsistent or unrecognized empty-search markers remain failures: %j", async (override) => {
+    const payload = { search_metadata: { status: "Success" }, search_information: { organic_results_state: "Fully empty" }, error: "Google hasn't returned any results for this query.", ...override };
+    await expect(serpapiSearch({ engine: "google", q: "synthetic query" }, { apiKey: "test", fetch: fakeFetch(payload) })).rejects.toMatchObject({ code: "provider_error" });
+    expect(() => normalizeWeb(payload, venue, source.retrievedAt, null)).toThrow("Web search returned an unrecognized error");
+  });
+  it.each(["google_maps", "google_maps_reviews"])("the Google organic empty exception never applies to another engine: %s", async (engine) => {
+    await expect(serpapiSearch({ engine }, { apiKey: "test", fetch: fakeFetch({ search_metadata: { status: "Success" }, search_information: { organic_results_state: "Fully empty" }, error: "Google hasn't returned any results for this query." }) })).rejects.toMatchObject({ code: "provider_error" });
+  });
+  it("an empty marker without the documented message does not explain missing results", () => {
+    expect(() => normalizeWeb({ search_metadata: { status: "Success" }, search_information: { organic_results_state: "Fully empty" } }, venue, source.retrievedAt, null)).toThrow("Web response is missing organic_results");
+  });
   it("preserves only the observed no-review search-information marker", async () => { const r = await serpapiSearch({ engine: "google_maps_reviews", place_id: "synthetic" }, { apiKey: "test", fetch: fakeFetch({ search_metadata: { status: "Success" }, search_information: { reviews_results_state: "No reviews", api_key: "private", reviewer: { name: "private" } }, search_parameters: { api_key: "private" } }) }); expect(r.payload.search_information).toEqual({ reviews_results_state: "No reviews" }); expect(r.payload.reviews).toBeUndefined(); expect(JSON.stringify(r.payload)).not.toContain("private"); });
   it("malformed shapes cannot retain unknown nested secrets", async () => { const r = await serpapiSearch({ engine: "google_maps" }, { apiKey: "test", fetch: fakeFetch({ local_results: { nestedSecret: "private" }, place_results: { title: { nestedSecret: "private" }, extensions: { api_key: "private" } } }) }); expect(JSON.stringify(r.payload)).not.toContain("private"); expect(r.payload.local_results).toBeNull(); });
   it("timeout after dispatch is uncertain and never automatically retried", async () => { const fetcher = vi.fn((_url, init) => new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))))) as unknown as typeof fetch; await expect(serpapiSearch({ engine: "google" }, { apiKey: "test", fetch: fetcher, timeoutMs: 5 })).rejects.toMatchObject({ code: "timeout", uncertain: true, retryable: false }); expect(fetcher).toHaveBeenCalledTimes(1); });

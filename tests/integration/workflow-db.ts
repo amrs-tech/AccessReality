@@ -44,6 +44,22 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
   const commit = (job: Json, token: string, attempt: string | null, options: Json = {}) => rpc("commit_step", [job.id, token,
     job.state_version, options.phase ?? "complete", options.state ?? {}, attempt, options.payload ?? { providerSearchId: "synthetic-search-id" },
     options.sources ?? [], options.claims ?? [], options.report ?? null, options.stop ?? "no_eligible_actions", 21600]);
+  const observedAt = (snapshot: Json) => new Date(Math.max(Date.now(), Date.parse(snapshot.startedAt) + 2)).toISOString();
+  const observe = async (remaining: number, allowIncrease = true) => {
+    const begun = await rpc("begin_serpapi_balance_check", []);
+    const result = await rpc("reconcile_serpapi_balance", [remaining, begun.snapshot, observedAt(begun.snapshot), 30, 400, true, allowIncrease]);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    return result;
+  };
+  const searchStep = async (job: Json, action: string, cache: string | null = null) => {
+    const held = await lease(job);
+    const attempt = await reserve(job, held.lease_token, cache as unknown as string, action);
+    assert.equal(attempt.ok, true, JSON.stringify(attempt));
+    assert.equal((await rpc("mark_dispatch", [attempt.attempt_id, held.lease_token])).ok, true);
+    const saved = await commit(job, held.lease_token, attempt.attempt_id, { phase: "reviews", stop: null });
+    assert.equal(saved.ok, true);
+    return saved.job;
+  };
   const test = async (name: string, action: () => Promise<void>) => {
     await reset();
     await action();
@@ -61,6 +77,9 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
       for (const pool of [anon, authenticated]) {
         await assert.rejects(pool.query("select * from public.jobs"), /permission denied/);
         await assert.rejects(pool.query("select public.consume_rate_limit('test',5,60)"), /permission denied/);
+        await assert.rejects(pool.query("select public.current_search_policy()"), /permission denied/);
+        await assert.rejects(pool.query("select public.begin_serpapi_balance_check()"), /permission denied/);
+        await assert.rejects(pool.query("select public.reconcile_serpapi_balance(200,'{}',now(),30,220,true)"), /permission denied/);
       }
       const grants = await admin.query("select proname,has_function_privilege('anon',p.oid,'execute') anon,has_function_privilege('authenticated',p.oid,'execute') authenticated,prosecdef from pg_proc p where pronamespace='public'::regnamespace and proname in ('create_job','claim_step','reserve_provider_attempt','mark_dispatch','commit_step','fail_step','cancel_job','save_assessment','reconcile_budget','retention_cleanup')");
       assert.equal(grants.rows.length, 10);
@@ -274,9 +293,9 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
   await test("Conservative reconciliation never increases cap; owner increase is audited", async () => {
     const job = await create(await session()); const held = await lease(job); await reserve(job, held.lease_token);
     const reduced = await rpc("reconcile_budget", ["serpapi", 5, 3, 50, true]);
-    assert.equal(reduced.bucket.limit_units, 3);
-    assert.equal((await rpc("reconcile_budget", ["serpapi", 100, 3, 100, true])).bucket.limit_units, 3);
-    assert.equal((await rpc("reconcile_budget", ["serpapi", 100, 3, 100, true, true])).bucket.limit_units, 98);
+    assert.equal(reduced.bucket.limit_units, 2, "The unresolved pre-existing reservation is also conservatively protected");
+    assert.equal((await rpc("reconcile_budget", ["serpapi", 100, 3, 100, true])).bucket.limit_units, 2);
+    assert.equal((await rpc("reconcile_budget", ["serpapi", 100, 3, 100, true, true])).bucket.limit_units, 97);
     assert.equal((await rpc("reconcile_budget", ["serpapi", 0, 3, 100, true])).bucket.limit_units, 1);
   });
 
@@ -305,7 +324,9 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
     assert.equal(legacy.last_known_provider_remaining, null);
     assert.equal(legacy.checked_at, null);
     await admin.query("update public.budget_buckets set last_known_provider_remaining=1000,checked_at=now(),metadata=metadata||'{\"last_known_provider_remaining\":1000,\"checked_at\":\"synthetic-old-check\",\"protected_reserve\":0}' where id='global:gemini'");
-    await admin.query(await readFile(path.join(process.cwd(), "supabase/migrations/004_llm_budget.sql"), "utf8"));
+    const legacyCorrection = await readFile(path.join(process.cwd(), "supabase/migrations/004_llm_budget.sql"), "utf8");
+    // Exercise the exact historical data correction without replacing the newer RPC implementation.
+    await admin.query(legacyCorrection.slice(0, legacyCorrection.indexOf("create or replace function")));
     const corrected = (await server.query("select * from public.budget_buckets where id='global:gemini'")).rows[0];
     assert.equal(corrected.limit_units, 10);
     assert.equal(corrected.reserved_units, 1);
@@ -316,8 +337,8 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
     assert.equal(corrected.metadata.protected_reserve, undefined);
     const status = await rpc("preflight_status", []);
     assert.equal(status.ok, true);
-    assert.equal(status.migration, "004");
-    assert.equal(status.rpcVersion, "2");
+    assert.equal(status.migration, "006");
+    assert.equal(status.rpcVersion, "3");
     assert.equal(status.llmBudgetSource, "owner_attempt_cap");
     assert.equal((await server.query("select count(*)::integer count from public.job_events where event_type='llm_budget_configured'")).rows[0].count, 6);
     const anon = new Pool({ ...connection, options: "-c role=anon" });
@@ -366,6 +387,236 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
     const metadata = (await server.query("select metadata from public.budget_buckets where id='global:serpapi'")).rows[0].metadata;
     assert.equal(metadata.daily_limit, 0);
     assert.equal(metadata.session_limit, 0);
+  });
+
+  await test("Search policy switches exactly at 50, and unknown/stale balances remain conservative", async () => {
+    const unknown = await create(await session(), "investigation");
+    assert.equal(unknown.serp_full_cap, 26); assert.equal(unknown.serp_cap, 5); assert.equal(unknown.search_mode, "conserve");
+    assert.equal(unknown.llm_cap, 56); assert.equal(unknown.step_cap, 128);
+    const above = await observe(51);
+    assert.equal(above.policy.mode, "expanded"); assert.equal(above.policy.effectiveCap, 26);
+    assert.equal((await create(await session(), "investigation")).serp_cap, 26);
+    const at = await observe(50);
+    assert.equal(at.policy.mode, "conserve"); assert.equal(at.policy.effectiveCap, 5);
+    assert.equal((await create(await session(), "investigation")).serp_cap, 5);
+    assert.equal((await observe(49)).policy.effectiveCap, 5);
+    await observe(200);
+    await admin.query("update public.budget_buckets set checked_at=now()-interval '61 seconds' where id='global:serpapi'");
+    const stale = await rpc("current_search_policy", []);
+    assert.equal(stale.fresh, false); assert.equal(stale.effectiveCap, 5);
+  });
+
+  await test("Expanded investigation dispatches past five; fresh low balance stops the sixth without spending", async () => {
+    await observe(200);
+    let job = await create(await session(), "investigation");
+    for (let index = 0; index < 6; index++) job = await searchStep(job, `SYNTHETIC_EXPANDED_${index}`);
+    assert.equal(job.serp_reserved, 6); assert.equal(job.serp_cap, 26);
+    await observe(50);
+    const held = await lease(job);
+    assert.equal(held.job.search_mode, "conserve");
+    assert.equal(held.job.serp_cap, 6, "Already-consumed attempts are preserved when the effective allowance shrinks");
+    const denied = await reserve(job, held.lease_token, null as unknown as string, "SYNTHETIC_AFTER_THRESHOLD");
+    assert.equal(denied.code, "budget_exhausted"); assert.equal(denied.effectiveSearchCap, 5);
+    assert.equal((await server.query("select count(*)::integer count from public.provider_attempts")).rows[0].count, 6);
+  });
+
+  await test("Concurrent reservations crossing 51 to 50 permit only one expanded sixth search", async () => {
+    await observe(200); await rpc("configure_limits", [60, 64, true]);
+    let first = await create(await session(), "investigation"); let second = await create(await session(), "investigation");
+    for (let index = 0; index < 5; index++) {
+      first = await searchStep(first, `SYNTHETIC_FIRST_${index}`);
+      second = await searchStep(second, `SYNTHETIC_SECOND_${index}`);
+    }
+    await observe(51);
+    const fixtures = await Promise.all([first, second].map(async (job) => ({ job, held: await lease(job) })));
+    const results = await Promise.all(fixtures.map(({ job, held }, index) => reserve(job, held.lease_token, null as unknown as string, `SYNTHETIC_SIXTH_${index}`)));
+    assert.equal(results.filter((result) => result.ok).length, 1);
+    assert.equal(results.filter((result) => result.code === "budget_exhausted").length, 1);
+    const winner = results.findIndex((result) => result.ok);
+    assert.equal((await rpc("mark_dispatch", [results[winner].attempt_id, fixtures[winner].held.lease_token])).ok, true);
+    assert.equal((await rpc("current_search_policy", [])).remainingEstimate, 50);
+    assert.equal((await server.query("select reserved_units from public.budget_buckets where id='global:serpapi'")).rows[0].reserved_units, 11);
+  });
+
+  await test("Last-moment balance reduction releases an undispatched sixth attempt and preserves audit", async () => {
+    await observe(200);
+    let job = await create(await session(), "investigation");
+    for (let index = 0; index < 5; index++) job = await searchStep(job, `SYNTHETIC_BEFORE_LOW_${index}`);
+    const held = await lease(job);
+    const attempt = await reserve(job, held.lease_token, hash("synthetic low dispatch cache"), "SYNTHETIC_PENDING_SIXTH");
+    assert.equal(attempt.ok, true);
+    await observe(50);
+    const denied = await rpc("mark_dispatch", [attempt.attempt_id, held.lease_token]);
+    assert.equal(denied.code, "budget_exhausted");
+    const row = (await server.query("select * from public.provider_attempts where id=$1", [attempt.attempt_id])).rows[0];
+    assert.equal(row.status, "released"); assert.equal(row.dispatch_started_at, null);
+    assert.equal((await server.query("select serp_reserved from public.jobs where id=$1", [job.id])).rows[0].serp_reserved, 5);
+    assert.equal((await server.query("select count(*)::integer count from public.attempt_budget_reservations where attempt_id=$1 and released_at is not null", [attempt.attempt_id])).rows[0].count, 3);
+  });
+
+  const saveReleasedFailure = async (job: Json, held: Json, attempt: Json, code: string, terminalPhase: string) => {
+    const releasedBefore = (await server.query("select count(*)::integer count from public.attempt_budget_reservations where attempt_id=$1 and released_at is not null", [attempt.attempt_id])).rows[0].count;
+    const countersBefore = (await server.query("select id,reserved_units from public.budget_buckets order by id")).rows;
+    const auditsBefore = (await server.query("select count(*)::integer count from public.job_events where job_id=$1 and event_type='reservation_released'", [job.id])).rows[0].count;
+    const checkpoint = { ...job.state, syntheticCheckpoint: `saved after ${code}`, failureStopReason: code };
+    const saved = await rpc("fail_step", [job.id, held.lease_token, job.state_version, attempt.attempt_id, code, false, null, "finalize", checkpoint]);
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+    assert.equal(saved.job.lease_token, null); assert.equal(saved.job.lease_until, null);
+    assert.equal(saved.job.state_version, job.state_version + 1); assert.equal(saved.job.state.syntheticCheckpoint, checkpoint.syntheticCheckpoint);
+    assert.deepEqual((await server.query("select id,reserved_units from public.budget_buckets order by id")).rows, countersBefore);
+    assert.equal((await server.query("select count(*)::integer count from public.attempt_budget_reservations where attempt_id=$1 and released_at is not null", [attempt.attempt_id])).rows[0].count, releasedBefore);
+    assert.equal((await server.query("select count(*)::integer count from public.job_events where job_id=$1 and event_type='reservation_released'", [job.id])).rows[0].count, auditsBefore);
+    assert.equal((await server.query("select status from public.provider_attempts where id=$1", [attempt.attempt_id])).rows[0].status, "released");
+    assert.equal((await rpc("fail_step", [job.id, held.lease_token, job.state_version, attempt.attempt_id, code, false, null, "finalize", checkpoint])).code, "stale_lease");
+    const finishingLease = await lease(saved.job);
+    const completed = await commit(saved.job, finishingLease.lease_token, null, { phase: terminalPhase });
+    assert.equal(completed.ok, true); assert.equal(completed.job.phase, terminalPhase);
+  };
+
+  await test("Released low-balance attempt still saves the failure checkpoint, clears its lease and never refunds twice", async () => {
+    await observe(200);
+    let job = await create(await session(), "investigation");
+    for (let index = 0; index < 5; index++) job = await searchStep(job, `SYNTHETIC_RELEASE_FAILURE_${index}`);
+    await admin.query("update public.jobs set phase='targeted_search' where id=$1", [job.id]);
+    const held = await lease(job);
+    const attempt = await reserve(job, held.lease_token, hash("synthetic released failure cache"), "SYNTHETIC_OPTIONAL_SIXTH");
+    assert.equal(attempt.ok, true); await observe(50);
+    assert.equal((await rpc("mark_dispatch", [attempt.attempt_id, held.lease_token])).code, "budget_exhausted");
+    await saveReleasedFailure(job, held, attempt, "budget_exhausted", "complete");
+  });
+
+  await test("Released kill-switch attempt still saves the failure checkpoint and can finalize without a stranded lease", async () => {
+    const job = await create(await session(), "investigation"); const held = await lease(job);
+    const attempt = await reserve(job, held.lease_token, hash("synthetic killed failure cache"), "SYNTHETIC_KILLED_BEFORE_DISPATCH");
+    assert.equal(attempt.ok, true);
+    await admin.query("update public.budget_buckets set enabled=false where id='global:serpapi'");
+    assert.equal((await rpc("mark_dispatch", [attempt.attempt_id, held.lease_token])).code, "search_disabled");
+    await saveReleasedFailure(job, held, attempt, "search_disabled", "partial");
+  });
+
+  await test("Cache remains reusable after the five-search cap without a new provider attempt", async () => {
+    await observe(200);
+    const key = hash("synthetic cache after low cap");
+    await searchStep(await create(await session()), "SYNTHETIC_CACHE_OWNER", key);
+    await observe(50);
+    let job = await create(await session(), "investigation");
+    for (let index = 0; index < 5; index++) job = await searchStep(job, `SYNTHETIC_LOW_${index}`);
+    const held = await lease(job);
+    const before = (await server.query("select count(*)::integer count from public.provider_attempts")).rows[0].count;
+    const cached = await reserve(job, held.lease_token, key, "SYNTHETIC_NEW_CACHE_ACTION");
+    assert.equal(cached.kind, "cache");
+    assert.equal((await server.query("select count(*)::integer count from public.provider_attempts")).rows[0].count, before);
+    assert.equal((await server.query("select serp_reserved from public.jobs where id=$1", [job.id])).rows[0].serp_reserved, 5);
+  });
+
+  await test("Balance refresh fences old observations and subtracts overlapping/refunded reservations monotonically", async () => {
+    await observe(200);
+    const old = await rpc("begin_serpapi_balance_check", []);
+    const job = await create(await session()); const held = await lease(job);
+    const attempt = await reserve(job, held.lease_token);
+    await rpc("cancel_job", [job.session_id, job.id]);
+    assert.equal((await server.query("select status from public.provider_attempts where id=$1", [attempt.attempt_id])).rows[0].status, "released");
+    const overlapping = await rpc("reconcile_serpapi_balance", [200, old.snapshot, observedAt(old.snapshot), 30, 400, true, true]);
+    assert.equal(overlapping.policy.remainingEstimate, 199, "Refunds never rewind the observation's reservation sequence");
+    const older = await rpc("begin_serpapi_balance_check", []);
+    const newer = await rpc("begin_serpapi_balance_check", []);
+    await rpc("reconcile_serpapi_balance", [50, newer.snapshot, observedAt(newer.snapshot), 30, 400, true, true]);
+    const ignored = await rpc("reconcile_serpapi_balance", [200, older.snapshot, observedAt(older.snapshot), 30, 400, true, true]);
+    assert.equal(ignored.ignored, true); assert.equal(ignored.policy.remainingEstimate, 50);
+  });
+
+  await test("A kill switch activated during account inspection is not re-enabled by refresh", async () => {
+    const begun = await rpc("begin_serpapi_balance_check", []);
+    await admin.query("update public.budget_buckets set enabled=false where id='global:serpapi'");
+    const refreshed = await rpc("reconcile_serpapi_balance", [200, begun.snapshot, observedAt(begun.snapshot), 30, 400, true, true]);
+    assert.equal(refreshed.bucket.enabled, false);
+    assert.equal((await server.query("select enabled from public.budget_buckets where id='allocation:verification:serpapi'")).rows[0].enabled, false);
+  });
+
+  await test("Fresh provider evidence restores expanded mode without increasing allocations or resetting counters", async () => {
+    await observe(49);
+    const before = (await server.query("select * from public.budget_buckets where id='global:serpapi'")).rows[0];
+    assert.equal((await observe(51, false)).policy.mode, "expanded");
+    const after = (await server.query("select * from public.budget_buckets where id='global:serpapi'")).rows[0];
+    assert.equal(after.limit_units, before.limit_units); assert.equal(after.reserved_units, before.reserved_units);
+  });
+
+  await test("Database receipt time keeps observations fresh when the application clock is 20 or 30 seconds ahead or behind", async () => {
+    for (const offset of [-30000, -20000, 20000, 30000]) {
+      const begun = await rpc("begin_serpapi_balance_check", []);
+      const clientRetrievedAt = new Date(Date.parse(begun.snapshot.startedAt) + offset).toISOString();
+      const result = await rpc("reconcile_serpapi_balance", [200, begun.snapshot, clientRetrievedAt, 30, 400, true, true]);
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.equal(result.policy.fresh, true); assert.equal(result.policy.mode, "expanded");
+      const trustedElapsed = Date.parse(result.checked_at) - Date.parse(begun.snapshot.startedAt);
+      assert.ok(trustedElapsed >= 0 && trustedElapsed < 5000, "Stored freshness follows the database's receipt clock");
+      assert.equal(Date.parse(result.bucket.metadata.provider_retrieved_at), Date.parse(clientRetrievedAt));
+      assert.equal(Date.parse(result.bucket.checked_at), Date.parse(result.checked_at));
+      assert.notEqual(Date.parse(result.checked_at), Date.parse(clientRetrievedAt));
+    }
+  });
+
+  await test("An account request delayed over 60 database seconds is rejected regardless of the application timestamp", async () => {
+    await observe(200);
+    const before = (await server.query("select * from public.budget_buckets where id='global:serpapi'")).rows[0];
+    const begun = await rpc("begin_serpapi_balance_check", []);
+    const expired = { ...begun.snapshot, startedAt: new Date(Date.parse(begun.snapshot.startedAt) - 61000).toISOString() };
+    const hostAhead = new Date(Date.parse(begun.snapshot.startedAt) + 30000).toISOString();
+    const result = await rpc("reconcile_serpapi_balance", [51, expired, hostAhead, 30, 400, true, true]);
+    assert.equal(result.code, "invalid_input");
+    const after = (await server.query("select * from public.budget_buckets where id='global:serpapi'")).rows[0];
+    assert.equal(after.last_known_provider_remaining, before.last_known_provider_remaining);
+    assert.equal(after.checked_at.getTime(), before.checked_at.getTime()); assert.deepEqual(after.metadata, before.metadata);
+  });
+
+  await test("A forged future account-check start cannot become a fresh observation even with an ahead application clock", async () => {
+    const begun = await rpc("begin_serpapi_balance_check", []);
+    const future = { ...begun.snapshot, startedAt: new Date(Date.parse(begun.snapshot.startedAt) + 20000).toISOString() };
+    const result = await rpc("reconcile_serpapi_balance", [200, future, new Date(Date.parse(future.startedAt) + 30000).toISOString(), 30, 400, true, true]);
+    assert.equal(result.code, "invalid_input");
+    assert.equal((await rpc("current_search_policy", [])).remainingEstimate, null);
+  });
+
+  await test("Configured demo limits increase existing buckets only with an explicit owner flag", async () => {
+    const sid = await session(); await searchStep(await create(sid), "SYNTHETIC_EXISTING_POLICY");
+    await rpc("configure_limits", [2, 2]);
+    await rpc("configure_limits", [60, 64]);
+    assert.equal((await server.query("select limit_units from public.budget_buckets where id=$1", [`session:${sid}:serpapi`])).rows[0].limit_units, 2);
+    await rpc("configure_limits", [60, 64, true]);
+    assert.equal((await server.query("select limit_units from public.budget_buckets where id=$1", [`session:${sid}:serpapi`])).rows[0].limit_units, 64);
+    assert.equal((await server.query("select limit_units from public.budget_buckets where id like 'day:%:serpapi'")).rows[0].limit_units, 60);
+    const metadata = (await server.query("select metadata from public.budget_buckets where id='global:gemini'")).rows[0].metadata;
+    assert.equal(metadata.session_limit, 96); assert.equal(metadata.daily_limit, 240);
+  });
+
+  await test("Provider-free finalization can still commit at the legacy twentieth step and expanded time limit", async () => {
+    for (const legacy of [true, false]) {
+      const job = await create(await session(), "investigation");
+      await admin.query("update public.jobs set phase='finalize',step_count=$2,step_cap=$2,search_mode=$3,active_milliseconds=300000 where id=$1", [job.id, legacy ? 20 : 128, legacy ? "legacy" : "expanded"]);
+      const current = (await server.query("select * from public.jobs where id=$1", [job.id])).rows[0];
+      const held = await lease(current);
+      assert.equal(held.job.step_count, legacy ? 21 : 129);
+      const saved = await commit(current, held.lease_token, null, { phase: "complete" });
+      assert.equal(saved.ok, true); assert.equal(saved.job.phase, "complete");
+      assert.equal((await server.query("select count(*)::integer count from public.provider_attempts")).rows[0].count, 0);
+    }
+  });
+
+  await test("Expanded Gemini budget remains owner-defined and permits all 56 bounded extraction/planning attempts", async () => {
+    await rpc("configure_llm_budget", [1000, true, true]); await rpc("configure_limits", [60, 64, true]);
+    let job = await create(await session(), "investigation");
+    for (let index = 0; index < 56; index++) {
+      const held = await lease(job);
+      const attempt = await reserve(job, held.lease_token, null as unknown as string, `SYNTHETIC_LLM_${index}`, "gemini");
+      assert.equal(attempt.ok, true); await rpc("mark_dispatch", [attempt.attempt_id, held.lease_token]);
+      const saved = await commit(job, held.lease_token, attempt.attempt_id, { phase: "extract", stop: null });
+      assert.equal(saved.ok, true); job = saved.job;
+    }
+    const held = await lease(job);
+    assert.equal((await reserve(job, held.lease_token, null as unknown as string, "SYNTHETIC_LLM_OVER_CAP", "gemini")).code, "budget_exhausted");
+    assert.equal(job.llm_reserved, 56); assert.equal(job.serp_reserved, 0);
+    const llm = (await server.query("select * from public.budget_buckets where id='global:gemini'")).rows[0];
+    assert.equal(llm.last_known_provider_remaining, null); assert.equal(llm.checked_at, null);
   });
 
   await test("Reservations and owner reconciliation share sorted locks under concurrency", async () => {

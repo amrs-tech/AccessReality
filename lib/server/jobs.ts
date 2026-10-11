@@ -7,6 +7,7 @@ import { env } from './env';
 import { initialState,terminal,type JobRow } from '../workflow/state';
 import { rateLimit } from './rate-limit';
 import { buildReport as assess } from '../assessment';
+import { refreshSearchBalance } from './search-balance';
 export async function ownedJob(sessionId:string,id:string):Promise<JobRow> {
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))throw new AppError('not_found',404);
   const job=await selectOne('jobs',{id,session_id:sessionId});
@@ -21,6 +22,7 @@ export async function publicJob(job:JobRow):Promise<PublicJob> {
   const client=db();const {data:events,error}=await client.from('job_events').select('id,event_type,payload,created_at').eq('job_id',job.id).order('created_at',{ascending:false}).limit(30);
   if(error)throw new AppError('dependency_unavailable');
   const bucket=await selectOne('budget_buckets',{id:'global:serpapi'},client);
+  const policy=requireRpc(await rpc('current_search_policy',{p_full_cap:job.serp_full_cap ?? job.serp_cap},client));
   const s=job.state;
   const {data:assessment,error:assessmentError}=await client.from('assessments').select('report').eq('job_id',job.id).order('revision',{ascending:false}).limit(1).maybeSingle();
   if(assessmentError)throw new AppError('dependency_unavailable');
@@ -34,7 +36,8 @@ export async function publicJob(job:JobRow):Promise<PublicJob> {
     sourceCount:s.sources?.length||0,reviewsExamined:s.reviewsExamined||0,
     events:(events||[]).reverse().map(e=>({id:e.id,type:e.event_type,message:typeof e.payload?.message==='string'?e.payload.message:humanEvent(e.event_type),createdAt:e.created_at})),
     stopReason:job.stop_reason,nextRetryAt:job.next_retry_at,canResume:!terminal(job.phase),remainingAction:s.pendingAction?.reason||(!terminal(job.phase)?humanEvent(job.phase):null),
-    discoveryJobId:job.input.discoveryJobId||null,candidateId:job.input.candidateId||null,lastKnownProviderRemaining:bucket?.last_known_provider_remaining??null,allowanceCheckedAt:bucket?.checked_at??null};
+    discoveryJobId:job.input.discoveryJobId||null,candidateId:job.input.candidateId||null,lastKnownProviderRemaining:bucket?.last_known_provider_remaining??null,allowanceCheckedAt:bucket?.checked_at??null,
+    searchMode:job.search_mode||'legacy',effectiveProviderRemaining:policy.remainingEstimate??null};
 }
 function humanEvent(event:string):string {return ({details:'Checking venue listing attributes.',reviews:'Checking a small newest-review sample.',extract:'Extracting and validating source-linked observations.',assess:'Assessing the selected requirements.',plan:'Selecting a permitted investigation of missing evidence.',targeted_search:'Checking a selected evidence gap.',finalize:'Preparing the visit brief.'} as Record<string,string>)[event]||event.replaceAll('_',' ');}
 export async function createJob(sessionId:string,key:string,input:any,kind:'discovery'|'investigation'):Promise<any> {
@@ -51,6 +54,7 @@ export async function createJob(sessionId:string,key:string,input:any,kind:'disc
     requirements=input.requirements;
   }
   await rateLimit(`create:${sessionId}:${kind}`,2,3600);
-  const e=env();const result=requireRpc(await rpc('create_job',{p_session_id:sessionId,p_key:key,p_hash:requestHash,p_kind:kind,p_venue_id:venue?.id||null,p_input:{...input,_allocation:process.env.VERIFICATION_MODE==='true'?'verification':'operations'},p_state:initialState(requirements,venue),p_serp_cap:kind==='discovery'?1:e.INVESTIGATION_SEARCH_CAP,p_llm_cap:kind==='discovery'?0:e.INVESTIGATION_LLM_CAP}));
+  const e=env();await refreshSearchBalance({force:true});
+  const result=requireRpc(await rpc('create_job',{p_session_id:sessionId,p_key:key,p_hash:requestHash,p_kind:kind,p_venue_id:venue?.id||null,p_input:{...input,_allocation:process.env.VERIFICATION_MODE==='true'?'verification':'operations'},p_state:initialState(requirements,venue),p_serp_cap:kind==='discovery'?1:e.INVESTIGATION_SEARCH_CAP,p_llm_cap:kind==='discovery'?0:e.INVESTIGATION_LLM_CAP,p_step_cap:e.MAX_WORKFLOW_STEPS}));
   return {jobId:result.job?.id||result.job_id||result.id,stateVersion:result.job?.state_version||result.state_version||0};
 }
