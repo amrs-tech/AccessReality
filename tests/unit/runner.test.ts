@@ -59,3 +59,19 @@ it('ambiguous branch snippets stay in the ledger without model dispatch or extra
   const assessed=await advanceJob('test-session',mock.job.id,1,deps());
   expect(assessed.state.report?.overall).toBe('needs_confirmation');expect(assessed.state.report?.isPartial).toBe(false);expect(assessed.state.claims).toEqual([]);
 });
+it('a normal search cap saves a complete unknown brief without more provider calls',async()=>{
+  mock.job.phase='assess';mock.job.serp_reserved=5;
+  const search=vi.fn(),extract=vi.fn(),plan=vi.fn();
+  const assessed=await advanceJob('test-session',mock.job.id,0,{...deps(),search,extract,plan});
+  expect(assessed.phase).toBe('finalize');expect(assessed.stop_reason).toBe('search_budget_exhausted');
+  const finished=await advanceJob('test-session',mock.job.id,1,{...deps(),search,extract,plan});
+  expect(finished.phase).toBe('complete');expect(finished.state.report?.overall).toBe('needs_confirmation');expect(finished.state.report?.isPartial).toBe(false);
+  expect(search).not.toHaveBeenCalled();expect(extract).not.toHaveBeenCalled();expect(plan).not.toHaveBeenCalled();expect(finished.serp_reserved).toBe(5);
+});
+it('a search cap preserves an independently incomplete extraction as partial',async()=>{
+  mock.job.phase='assess';mock.job.serp_reserved=5;mock.job.state.failedStages=['extraction_validation_rejected'];
+  await advanceJob('test-session',mock.job.id,0,deps());
+  const finished=await advanceJob('test-session',mock.job.id,1,deps());
+  expect(finished.phase).toBe('partial');expect(finished.state.report?.overall).toBe('needs_confirmation');expect(finished.state.failedStages).toContain('extraction_validation_rejected');
+  expect(mock.calls).not.toContain('reserve_provider_attempt');
+});

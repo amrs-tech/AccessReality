@@ -22,10 +22,10 @@ function makeReport(mode: 'complete' | 'unknown' | 'partial', requirements: Requ
   };
 }
 
-async function fakeApi(page: Page, options: { mode?: 'complete' | 'unknown' | 'partial'; authenticated?: boolean; expire?: boolean; resumable?: boolean } = {}) {
+async function fakeApi(page: Page, options: { mode?: 'complete' | 'unknown' | 'partial'; authenticated?: boolean; expire?: boolean; resumable?: boolean; savedReport?: Report; stopReason?: string } = {}) {
   let authenticated = options.authenticated ?? false;
-  let requirements = [...defaultRequirements];
-  let stage = options.resumable ? 1 : 0;
+  let requirements = options.savedReport ? options.savedReport.requirements.map(({ feature, priority, scope }) => ({ feature, priority, ...(scope ? { scope } : {}) })) : [...defaultRequirements];
+  let stage = options.savedReport ? 3 : options.resumable ? 1 : 0;
   let retryAt: string | null = null;
   let searchCount = 0;
   let discoverySteps = 0;
@@ -34,14 +34,14 @@ async function fakeApi(page: Page, options: { mode?: 'complete' | 'unknown' | 'p
   const mode = options.mode ?? 'complete';
   const job = (kind: 'discovery' | 'investigation'): Job => ({
     id: kind === 'discovery' ? discoveryId : investigationId, kind,
-    phase: kind === 'discovery' ? discoverySteps ? 'complete' : 'discovery' : stage >= 3 ? mode === 'partial' ? 'partial' : 'complete' : ['details', 'reviews', 'extract'][stage],
+    phase: kind === 'discovery' ? discoverySteps ? 'complete' : 'discovery' : stage >= 3 ? mode === 'partial' || options.savedReport?.isPartial ? 'partial' : 'complete' : ['details', 'reviews', 'extract'][stage],
     stateVersion: kind === 'discovery' ? discoverySteps : stage, venue: kind === 'discovery' ? null : syntheticVenue,
     candidates: kind === 'discovery' && discoverySteps ? [syntheticVenue] : [], requirements,
-    report: kind === 'investigation' && stage >= 3 ? makeReport(mode, requirements) : null,
+    report: kind === 'investigation' && stage >= 3 ? options.savedReport ?? makeReport(mode, requirements) : null,
     providerAttempts: kind === 'discovery' ? discoverySteps : Math.min(stage, 2), appCacheHits: 0, searchCap: kind === 'discovery' ? 1 : 5,
-    llmAttempts: kind === 'investigation' && stage >= 3 ? 1 : 0, llmCap: 6, sourceCount: stage >= 3 && mode === 'complete' ? 1 : 0, reviewsExamined: stage >= 3 && mode === 'complete' ? 2 : 0,
+    llmAttempts: kind === 'investigation' && stage >= 3 ? 1 : 0, llmCap: 6, sourceCount: stage >= 3 ? options.savedReport?.sources.length ?? (mode === 'complete' ? 1 : 0) : 0, reviewsExamined: stage >= 3 ? options.savedReport?.reviewsExamined ?? (mode === 'complete' ? 2 : 0) : 0,
     events: [{ type: 'test_action', message: 'Synthetic test action: checking entrance evidence.', createdAt: stamp }],
-    stopReason: stage >= 3 ? mode === 'partial' ? 'upstream_unavailable' : 'evidence_sufficient' : null, nextRetryAt: retryAt,
+    stopReason: stage >= 3 ? options.stopReason ?? (mode === 'partial' ? 'upstream_unavailable' : 'evidence_sufficient') : null, nextRetryAt: retryAt,
     canResume: stage < 3, remainingAction: stage < 3 ? 'FETCH_NEWEST_REVIEWS' : null,
     discoveryJobId: kind === 'investigation' ? discoveryId : null, candidateId: kind === 'investigation' ? syntheticVenue.id : null,
     lastKnownProviderRemaining: null, allowanceCheckedAt: null,
@@ -210,4 +210,104 @@ test('version conflict refreshes saved state before one sequential retry', async
   await page.getByRole('button', { name: 'Resume investigation' }).click();
   await expect(page.getByRole('heading', { name: 'Investigation complete' })).toBeVisible();
   expect(fake.counts().steps).toBe(3);
+});
+
+const summaryRequirements: Requirements = [
+  { feature: 'entrance_step_free', priority: 'must_have' },
+  { feature: 'accessible_restroom', priority: 'must_have' },
+];
+
+function barrierReport(isPartial = false): Report {
+  const report = makeReport('complete', summaryRequirements);
+  const text = 'Synthetic test text: Two steps block the entrance. The accessible restroom was open.';
+  return { ...report, overall: 'reported_barrier', isPartial,
+    sources: report.sources.map(source => ({ ...source, text })),
+    claims: report.claims.map(claim => {
+      const quote = claim.feature === 'entrance_step_free' ? 'Two steps block the entrance.' : 'The accessible restroom was open.';
+      return { ...claim, polarity: claim.feature === 'entrance_step_free' ? 'barrier' : 'supports', originalQuote: quote, quoteStart: text.indexOf(quote), quoteEnd: text.indexOf(quote) + quote.length };
+    }),
+    requirements: report.requirements.map(requirement => requirement.feature === 'entrance_step_free' ? { ...requirement, status: 'barrier_reported', explanation: 'A recent synthetic visitor observation reports entrance steps.' } : requirement),
+  };
+}
+
+test('prominent supported result shows the actual must-have coverage', async ({ page }) => {
+  await fakeApi(page, { authenticated: true, savedReport: makeReport('complete', summaryRequirements) });
+  await page.goto(`/investigate/${investigationId}`);
+  const summary = page.getByRole('region', { name: 'Your must-haves are supported by the available evidence.' });
+  await expect(summary).toBeVisible();
+  await expect(summary.getByText('2 of 2 must-haves')).toBeVisible();
+  await expect(summary.getByText('These are public observations. Confirm current conditions with the venue before arrival.')).toBeVisible();
+  const resultBox = await summary.boundingBox();
+  const progressBox = await page.locator('.progress-panel').boundingBox();
+  expect(resultBox!.y + resultBox!.height).toBeLessThan(progressBox!.y);
+});
+
+test('prominent barrier result names the must-have barrier and preserves it in a partial report', async ({ page }) => {
+  await fakeApi(page, { authenticated: true, savedReport: barrierReport(true) });
+  await page.goto(`/investigate/${investigationId}`);
+  const summary = page.getByRole('region', { name: 'A reported barrier conflicts with your must-haves.' });
+  await expect(summary).toBeVisible();
+  await expect(summary.getByText('Reported barriers: Step-free entrance.')).toBeVisible();
+  await expect(summary.getByText('Evidence is partial')).toBeVisible();
+  await expect(summary.getByText(/Some evidence could not be fully validated or processed\./)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Your must-haves are supported by the available evidence.' })).toHaveCount(0);
+});
+
+test('preferred support cannot hide an unknown must-have and mobile shows the result before controls', async ({ page }) => {
+  const requirements: Requirements = [{ feature: 'entrance_step_free', priority: 'preferred' }, { feature: 'accessible_restroom', priority: 'must_have' }];
+  const report = makeReport('complete', requirements);
+  report.overall = 'needs_confirmation';
+  report.requirements = report.requirements.map(requirement => requirement.feature === 'accessible_restroom' ? { ...requirement, status: 'insufficient', claimIds: [], sourceIds: [], explanation: 'No usable restroom observation was retrieved.' } : requirement);
+  const text = 'Synthetic test text: The entrance was step free.';
+  report.sources = report.sources.map(source => ({ ...source, text }));
+  report.claims = report.claims.filter(claim => claim.feature === 'entrance_step_free').map(claim => ({ ...claim, originalQuote: 'The entrance was step free.', quoteStart: text.indexOf('The entrance'), quoteEnd: text.length }));
+  const fake = await fakeApi(page, { authenticated: true, savedReport: report, stopReason: 'search_budget_exhausted' });
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto(`/investigate/${investigationId}`);
+  const heading = page.getByRole('heading', { name: 'Requirements not confirmed — check with the venue before visiting.' });
+  await expect(heading).toBeInViewport({ ratio: 1 });
+  const summary = page.locator('.visit-result');
+  await expect(summary.getByText('0 of 1 must-haves')).toBeVisible();
+  await expect(summary.getByText('Still to confirm: Accessible restroom.')).toBeVisible();
+  const headingBox = await heading.boundingBox();
+  const controlsBox = await page.locator('.requirements-sidebar').boundingBox();
+  expect(headingBox!.y + headingBox!.height).toBeLessThan(controlsBox!.y);
+  await expect(page.getByText('This bounded investigation used its permitted search attempts and stopped further checks. Remaining venue requirements still need confirmation.')).toBeVisible();
+  await summary.getByRole('link', { name: 'View detailed report' }).click();
+  await expect(page.getByRole('heading', { name: syntheticVenue.name })).toBeFocused();
+  expect(fake.counts().steps).toBe(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('an incomplete report cannot show a favorable headline even if its overall field says supported', async ({ page }) => {
+  const report = { ...makeReport('complete', summaryRequirements), isPartial: true };
+  await fakeApi(page, { authenticated: true, savedReport: report });
+  await page.goto(`/investigate/${investigationId}`);
+  await expect(page.getByRole('heading', { name: 'Requirements not confirmed — check with the venue before visiting.' })).toBeVisible();
+  await expect(page.locator('.visit-result').getByText('Evidence is partial')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Your must-haves are supported by the available evidence.' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Public evidence supports your requirements' })).toHaveCount(0);
+  await expect(page.locator('.overall-fit')).toHaveClass(/fit-needs_confirmation/);
+  await expect(page.getByRole('button', { name: 'Investigate remaining gaps' })).toBeVisible();
+});
+
+for (const { origin, limitation } of [
+  { origin: 'saved revision', limitation: 'Stage unavailable or incomplete: extraction_validation_rejected.' },
+  { origin: 'private job response', limitation: 'Unavailable stage: extraction_validation_rejected.' },
+]) test(`partial validation rejection from ${origin} names excluded claims without implying provider failure`, async ({ page }) => {
+  const report = { ...makeReport('unknown', summaryRequirements), isPartial: true,
+    limitations: [limitation],
+  };
+  const fake = await fakeApi(page, { authenticated: true, savedReport: report, stopReason: 'extraction_validation_rejected' });
+  await page.goto(`/investigate/${investigationId}`);
+  const summary = page.locator('.visit-result');
+  await expect(summary.getByRole('heading', { name: 'Requirements not confirmed — check with the venue before visiting.' })).toBeVisible();
+  await expect(summary.getByText('Evidence is partial')).toBeVisible();
+  await expect(summary.getByText(/Some extracted claims could not be verified against their sources and were excluded\./)).toBeVisible();
+  await expect(page.locator('.partial-note')).toContainText('Some extracted claims could not be verified against their sources and were excluded.');
+  await expect(summary).toContainText('The result uses only accepted evidence.');
+  await expect(summary.getByText('0 of 2 must-haves')).toBeVisible();
+  await expect(summary.getByText(/unfinished|unavailable provider|provider failure/i)).toHaveCount(0);
+  expect(fake.counts().steps).toBe(0);
+  await page.screenshot({ path: '.verification/result-headline-unknown.png', fullPage: false });
 });

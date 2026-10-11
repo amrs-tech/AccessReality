@@ -5,6 +5,7 @@ import type { Report } from '../lib/contracts';
 import { RequirementCard } from './RequirementCard';
 import { EvidencePanel } from './EvidencePanel';
 import { formatDate, mapsHref } from './ui-contracts';
+import { displayedFit, partialEvidenceReason } from './VisitResult';
 
 const overall = {
   needs_confirmation: { title: 'Some requirements need confirmation', detail: 'The available evidence leaves important questions open. Ask the venue before you arrive.' },
@@ -13,14 +14,15 @@ const overall = {
 };
 
 export function VisitBrief({ report, jobId, headingRef }: { report: Report; jobId: string; headingRef: RefObject<HTMLHeadingElement | null> }) {
-  const fit = overall[report.overall];
+  const fitState = displayedFit(report);
+  const fit = overall[fitState];
   const selected = report.requirements.filter(requirement => requirement.priority !== 'not_needed');
   const mustHave = selected.filter(requirement => requirement.priority === 'must_have');
   const supported = mustHave.filter(requirement => requirement.status === 'supported').length;
   const phone = report.venue.phone && /^[+\d()\s.-]{3,100}$/.test(report.venue.phone) ? report.venue.phone.replace(/[^+\d]/g, '') : null;
   return <div className="brief-layout">
     <section className="visit-brief" aria-labelledby="report-heading"><div className="brief-venue"><span className="eyebrow">Your visit brief {report.isPartial ? '· partial result' : ''}</span><h2 id="report-heading" tabIndex={-1} ref={headingRef}>{report.venue.name}</h2><p>{report.venue.address || 'Address not supplied by the source'}</p><p className="small muted">Generated <time dateTime={report.generatedAt}>{formatDate(report.generatedAt, true)}</time></p></div>
-      <div className={`overall-fit fit-${report.overall}`}><span className="fit-symbol" aria-hidden="true">{report.overall === 'reported_barrier' ? '!' : report.overall === 'needs_confirmation' ? '?' : '✓'}</span><div><h3>{fit.title}</h3><p>{fit.detail}</p>{report.isPartial && <p className="partial-note"><strong>This brief is partial.</strong> An incomplete evidence stage may have omitted relevant information.</p>}</div></div>
+      <div className={`overall-fit fit-${fitState}`}><span className="fit-symbol" aria-hidden="true">{fitState === 'reported_barrier' ? '!' : fitState === 'needs_confirmation' ? '?' : '✓'}</span><div><h3>{fit.title}</h3><p>{fit.detail}</p>{report.isPartial && <p className="partial-note"><strong>This brief is partial.</strong> {partialEvidenceReason(report)} The result uses only accepted evidence.</p>}</div></div>
       <div className="brief-actions"><a className="button secondary" href={mapsHref(report.venue)} target="_blank" rel="noopener noreferrer">Open venue in Google Maps <span aria-hidden="true">↗</span></a>{phone && <a className="text-button" href={`tel:${phone}`}>Call {report.venue.phone}</a>}<button type="button" className="text-button" onClick={() => window.print()}>Print brief</button><a className="text-button" href={`/api/jobs/${encodeURIComponent(jobId)}/export`} download>Export JSON</a></div>
       <div className="coverage-line"><h3>Requirement by requirement</h3><span>{supported} / {mustHave.length} must-haves supported <span className="muted">· evidence coverage</span></span></div>
       {selected.length > 0 ? <div className="requirement-cards">{selected.map(requirement => <RequirementCard key={requirement.feature} requirement={requirement} />)}</div> : <p className="empty-panel">Select at least one must-have requirement to assess the fit of this venue.</p>}

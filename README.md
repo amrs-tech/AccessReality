@@ -10,6 +10,7 @@ P0 application implemented. Hosted Supabase migrations, real SerpApi response sh
 - Up to five exact venue candidates. Names alone never merge branches.
 - Short, sequential, persisted steps: listing → newest reviews → schema extraction → deterministic assessment → a permitted gap search → brief.
 - A dated evidence ledger, separate arrival/entrance/movement/seating/restroom barriers, specific confirmation questions, print and JSON export.
+- A prominent result above the detailed report: must-haves supported, a reported must-have barrier, or requirements not confirmed. Missing evidence stays unconfirmed; preferred requirements cannot override a must-have, and incomplete evidence cannot produce a favorable headline.
 - Private 24-hour demo sessions, origin + session-bound CSRF checks, durable ownership checks and inaccessible browser database tables/RPCs.
 - PostgreSQL leases, version checks, idempotency keys, global/day/session/job budgets, an owner kill switch, reservation audits, dispatch markers and uncertain recovery.
 - Shared bounded caching. Changed requirements reuse the saved corpus with zero searches; new gap investigation requires an explicit action. Corpus limits (60 snapshots, 48,000 combined text characters, 96 claims and 24,000 quote/scope characters) produce an explicit partial result when exceeded.
@@ -17,6 +18,8 @@ P0 application implemented. Hosted Supabase migrations, real SerpApi response sh
 SerpApi is essential for live public branch discovery and evidence. The three engines are `google_maps` (discovery/details), `google_maps_reviews` (small newest/keyword samples), and `google` (branch-specific search snippets, not full pages). Gemini extracts exact public quotations with a JSON schema and chooses only from a server-built action menu. Server validation rejects invented citations or unsupported favorable interpretations. Assessment, freshness, barriers, questions, eligibility and budgets are deterministic. Visitor requirements are not sent to Gemini.
 
 No accessibility confidence percentage, invented dimensions, fabricated reviews or inference of a currently working lift. This is public evidence, not an inspection or certification. No routing, photo analysis, embeddings, Python service, external agent framework or P1 shares/comparison.
+
+A five-search cap is the normal limit for one investigation, not a conclusion about the venue. A completed run can still need confirmation. A partial brief separately means some evidence could not be fully validated or processed; rejected claims never establish fit. The headline and its must-have counts appear before the requirements controls and progress details on desktop and mobile. Use **View detailed report** for the evidence and questions, or reassess the saved corpus without searches.
 
 ## Local setup (Windows PowerShell)
 

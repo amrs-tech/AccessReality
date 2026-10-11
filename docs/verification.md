@@ -101,3 +101,29 @@ Initial offline release `e916a321504479f3a41da1f5c2b39513c00eee90` had 114 offli
 3. **Manual accessibility:** assistive-technology/200% browser zoom remain; automated checks do not certify accessibility.
 
 No P1, paid service, Python server, photo analysis, street routing, embeddings or multi-agent application framework was added.
+
+## 11 October follow-up: prominent result and cap explanation
+
+The owner reported confusing search-cap/partial messages and requested a one-line result before the detailed report. The UI now places the deterministic result above the requirements controls and progress panel on desktop and mobile. Its three outcomes are supported must-haves, a reported must-have barrier, and requirements not confirmed. It shows actual must-have counts and unresolved feature names. Preferred support cannot hide an unknown must-have; even a malformed saved positive overall field is displayed as unconfirmed when the evidence is partial. The details link scrolls and moves keyboard focus without starting any steps.
+
+Read-only audit of the owner's saved Phoenix Marketcity investigation (`3fc1f1c0-1056-41b4-94c4-b80092b833b4`):
+
+- Normal investigation cap: **5/5 SerpApi**, **5/6 Gemini**; all ten provider requests completed. No global allowance failure or stuck lease was found.
+- The brief is partial because five extracted candidates failed validation: two non-verbatim quotations, two feature entailment failures and one support entailment failure. These were excluded. All eligible source text was processed; the saved partial flag was not cleared or rewritten.
+- **41** saved sources, **25** sampled reviews, **10** accepted claims. All **three** selected must-haves remain insufficient. Undated/generically scoped evidence cannot establish these requirements; internal movement has no accepted observation.
+- The normal cap message now describes the bounded stop. The separate partial explanation identifies claims that could not be verified, instead of suggesting that hitting the search cap itself invalidates a report.
+- No new SerpApi or Gemini requests were made for this change. The saved verification allocation is **12/30** used, **18** available; it was not reset or raised. The saved account balance is historical, not a fresh provider check.
+
+Offline workflow regressions additionally verify that reaching the normal search cap saves a **complete, unconfirmed** brief when required processing succeeded, and preserves **partial, unconfirmed** when extraction independently failed. These checks prohibit provider fetches.
+
+| Follow-up check | Actual result |
+|---|---|
+| `npm test` | **126/126** passed, including the two normal-cap/independent-failure regressions. |
+| `npm run typecheck` / `npm run lint` | Passed; final full-project ESLint exit 0. |
+| `npm run test:e2e` | **14/14** passed against intercepted offline fixtures. Includes all eight previous browser flows plus supported/barrier/unknown summaries, preferred vs must-have priority, partial-positive protection, and both recorded validation-failure formats. Mobile ordering, detailed-report keyboard focus and existing axe checks passed. |
+| `npm run build` | Passed again after final wording changes; optimized production build and TypeScript completed. |
+| Actual saved private report | Reloaded in the owner's existing authenticated in-app browser against the rebuilt production server. Headline **Requirements not confirmed — check with the venue before visiting.**, **0 of 3** must-haves, all three feature names, and the excluded-claims explanation verified. Result precedes controls; displayed attempts remain **5/5**. No new investigation or provider dispatch. |
+
+The production server was restarted on the existing localhost3000 port and left running. The screenshot `.verification/result-headline-unknown.png` is clearly labeled **synthetic test venue** and is an offline UI preview, not real venue evidence. No database migration changed; the previous 26 PostgreSQL gates were not rerun for this display-only change. No deployment was created; the previously documented Vercel access gap remains.
+
+The review also identified follow-up cases outside this display change: cached follow-up eligibility at the search cap, optional search-budget denial classification, finalization at the twentieth step, and overly generic model scope labels. They require dedicated regressions and a provenance-preserving implementation; none caused this run's validation failures. No budget, extraction, assessment, migration or saved evidence semantics were loosened here.
