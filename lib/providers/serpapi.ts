@@ -2,6 +2,7 @@ import "server-only";
 import { object, safeUrl, string } from "../evidence/normalize";
 import { safeImageUrl } from "../evidence/images";
 import { ProviderError } from "./errors";
+import { providerTimeoutMs } from "./deadlines";
 export interface SerpApiOptions { apiKey: string; fetch?: typeof fetch; now?: () => Date; timeoutMs?: number }
 export interface SerpApiResult { payload: Record<string, unknown>; providerSearchId: string | null; retrievedAt: string; durationMs: number }
 const ALLOWED_PARAMS = new Set(["engine", "type", "q", "hl", "gl", "place_id", "data_cid", "data_id", "sort_by", "query", "num", "next_page_token", "no_cache"]);
@@ -14,6 +15,15 @@ function completedEmptyGoogleSearch(payload: Record<string, unknown>, engine: st
     && object(payload.search_information)?.organic_results_state === "Fully empty"
     && (payload.organic_results === undefined || (Array.isArray(payload.organic_results) && payload.organic_results.length === 0));
 }
+function completedEmptyGoogleNews(payload: Record<string, unknown>, engine: string): boolean {
+  // Observed live Google News response: a completed, empty search includes this
+  // engine-specific error text and news_results_state rather than an array.
+  return engine === "google_news"
+    && ["Google News hasn't returned any results for this query.", "Google hasn't returned any results for this query."].includes(String(payload.error))
+    && object(payload.search_metadata)?.status === "Success"
+    && object(payload.search_information)?.news_results_state === "Fully empty"
+    && (payload.news_results === undefined || (Array.isArray(payload.news_results) && payload.news_results.length === 0));
+}
 async function request(endpoint: "search" | "account", params: Record<string, string>, options: SerpApiOptions): Promise<SerpApiResult> {
   if (!options.apiKey) throw new ProviderError("configuration", "SerpApi is not configured");
   if (params.no_cache !== undefined && (endpoint !== "search" || params.engine !== "google_news" || params.no_cache !== "true")) throw new ProviderError("configuration", "Unsupported search parameters");
@@ -22,7 +32,7 @@ async function request(endpoint: "search" | "account", params: Record<string, st
   if (endpoint === "search" && !["google_maps", "google_maps_reviews", "google", "google_news"].includes(params.engine)) throw new ProviderError("configuration", "Unsupported search engine");
   url.searchParams.set("api_key", options.apiKey);
   const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined; const started = Date.now();
-  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new ProviderError("timeout", "SerpApi timed out; the dispatch may have consumed an attempt", false, true)); }, Math.max(1, Math.min(options.timeoutMs ?? 25000, 25000))); });
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new ProviderError("timeout", "SerpApi timed out; the dispatch may have consumed an attempt", false, true)); }, providerTimeoutMs(options.timeoutMs)); });
   try {
     return await Promise.race([(async () => {
     const response = await (options.fetch ?? fetch)(url, { signal: controller.signal, cache: "no-store", redirect: "manual" });
@@ -38,9 +48,11 @@ async function request(endpoint: "search" | "account", params: Record<string, st
     let payload: Record<string, unknown> | null; try { payload = object(JSON.parse(body)); } catch { throw new ProviderError("schema_drift", "SerpApi returned invalid JSON"); }
     if (!payload) throw new ProviderError("schema_drift", "SerpApi returned a non-object response");
     const emptyGoogle = endpoint === "search" && completedEmptyGoogleSearch(payload, params.engine);
-    if (payload.error !== undefined && !emptyGoogle) throw new ProviderError("provider_error", "SerpApi reported an upstream error");
+    const emptyNews = endpoint === "search" && completedEmptyGoogleNews(payload, params.engine);
+    if (payload.error !== undefined && !emptyGoogle && !emptyNews) throw new ProviderError("provider_error", "SerpApi reported an upstream error");
     if (endpoint === "search" && params.engine === "google_news" && object(payload.search_metadata)?.status !== "Success") throw new ProviderError("schema_drift", "Google News returned no completed search status");
-    return { payload: endpoint === "account" ? payload : sanitizePayload(emptyGoogle ? { ...payload, organic_results: [] } : payload), providerSearchId: string(object(payload.search_metadata)?.id, 100), retrievedAt: (options.now?.() ?? new Date()).toISOString(), durationMs: Date.now() - started };
+    const completedPayload = emptyGoogle ? { ...payload, organic_results: [] } : emptyNews ? { ...payload, news_results: [] } : payload;
+    return { payload: endpoint === "account" ? payload : sanitizePayload(completedPayload), providerSearchId: string(object(payload.search_metadata)?.id, 100), retrievedAt: (options.now?.() ?? new Date()).toISOString(), durationMs: Date.now() - started };
     })(), deadline]);
   } catch (error) {
     if (error instanceof ProviderError) throw error;

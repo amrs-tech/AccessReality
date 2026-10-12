@@ -163,4 +163,27 @@ describe("Google News server-only provider boundary", () => {
     const response = await serpapiSearch(newsParams(venue, "Test City"), { apiKey: "test", fetch: fakeFetch({ search_metadata: { status: "Success" }, news_results: [] }) });
     expect(response.payload.news_results).toEqual([]);
   });
+  it("accepts the observed completed empty Google News shape and retains its provenance", async () => {
+    const response = await serpapiSearch(newsParams(venue, "Test City"), { apiKey: "test", now: () => new Date(AS_OF), fetch: fakeFetch({
+      search_metadata: { id: "synthetic-empty-news", status: "Success" },
+      search_information: { news_results_state: "Fully empty" },
+      error: "Google News hasn't returned any results for this query.",
+    }) });
+    expect(response.providerSearchId).toBe("synthetic-empty-news");
+    const result = normalizeNews(response.payload, venue, "Test City", response.retrievedAt, response.providerSearchId);
+    expect(result.articles).toEqual([]);
+    expect(result.retrievedAt).toBe(AS_OF);
+    expect(result.limitations).toContain("No matching reports does not establish that the venue is open or disruption-free.");
+  });
+  it.each([
+    { search_metadata: { status: "Error" } },
+    { search_information: { news_results_state: "Unknown" } },
+    { news_results: [article()] },
+    { error: "Google News upstream service failed." },
+  ])("does not turn an error or contradictory empty-news response into a successful check: %j", async override => {
+    await expect(serpapiSearch(newsParams(venue, "Test City"), { apiKey: "test", fetch: fakeFetch({
+      search_metadata: { status: "Success" }, search_information: { news_results_state: "Fully empty" },
+      error: "Google News hasn't returned any results for this query.", ...override,
+    }) })).rejects.toMatchObject({ code: "provider_error" });
+  });
 });

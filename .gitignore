@@ -10,4 +10,5 @@ playwright-report/
 .test-db-*/
 *.log
 .verification/
+demo-output/
 *.tsbuildinfo

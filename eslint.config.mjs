@@ -1,4 +1,4 @@
 import { defineConfig, globalIgnores } from 'eslint/config';
 import nextVitals from 'eslint-config-next/core-web-vitals';
 import nextTs from 'eslint-config-next/typescript';
-export default defineConfig([...nextVitals, ...nextTs, globalIgnores(['.next/**', 'node_modules/**', '.local-postgres/**','.test-db-*/**','.verification/**','test-results/**','playwright-report/**']), { rules: { '@typescript-eslint/no-explicit-any': 'off', 'react-hooks/set-state-in-effect': 'off' } }]);
+export default defineConfig([...nextVitals, ...nextTs, globalIgnores(['.next/**', 'node_modules/**', '.local-postgres/**','.test-db-*/**','.verification/**','test-results/**','playwright-report/**','demo-output/**']), { rules: { '@typescript-eslint/no-explicit-any': 'off', 'react-hooks/set-state-in-effect': 'off' } }]);

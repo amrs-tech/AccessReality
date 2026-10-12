@@ -3,7 +3,7 @@ import { extractedClaimSchema } from "../contracts";
 import { relativeAgeInterval, validatedDate } from "./dates";
 import { claimIdentityId } from "./identity";
 export { claimIdentityId } from "./identity";
-export const EXTRACTOR_VERSION = "gemini-public-evidence-v3-verbatim-scope";
+export const EXTRACTOR_VERSION = "gemini-public-evidence-v4-explicit-feature";
 const FEATURE_CONTEXT: Record<Feature, RegExp> = {
   arrival_step_free: /(?:arrival|drop[- ]?off|parking).*(?:route|path|entrance)|(?:route|path).*(?:parking|drop[- ]?off)/i,
   entrance_step_free: /entrance|entry|door|ramp|steps|stairs/i,
@@ -16,9 +16,9 @@ const SUPPORT: Record<Feature, RegExp> = {
   entrance_step_free: /step[- ]free (?:entrance|entry)|(?:entrance|entry).*(?:step[- ]free|no steps|without steps|ramp)|(?:ramp).*(?:entrance|entry)|wheelchair[- ]accessible (?:entrance|entry)/i,
   interior_movement: /wheelchair.*(?:move|navigate|movement|usable|accessible).*(?:inside|interior|aisles|corridor)|(?:inside|interior|aisles|corridor).*wheelchair[- ]accessible|wheelchair[- ]accessible (?:interior|aisles|corridor)/i,
   accessible_seating: /wheelchair[- ]accessible seating|accessible (?:seating|table)|wheelchair.*(?:fit|space).*(?:table|seat)|(?:table|seat).*wheelchair/i,
-  accessible_restroom: /wheelchair[- ]accessible (?:restroom|toilet|bathroom|washroom)|accessible (?:restroom|toilet|bathroom|washroom)/i,
+  accessible_restroom: /wheelchair[- ]accessible (?:restroom|toilet|bathroom|washroom)|accessible (?:restroom|toilet|bathroom|washroom)|\b(?:restroom|toilet|bathroom|washroom) for wheel ?chair users\b/i,
   accessible_parking: /wheelchair[- ]accessible parking|accessible parking/i,
-  lift_present: /(?:there is|there was|has|have|had|exists|present).*\b(?:lift|elevator)\b|\b(?:lift|elevator)\b.*(?:exists|present|available)/i,
+  lift_present: /(?:there is|there was|there are|there were|has|have|had|exists|present).*\b(?:lifts?|elevators?)\b|\b(?:lifts?|elevators?)\b.*(?:exists|present|available)/i,
   lift_operational: /\b(?:lift|elevator)\b.*\b(?:working|operating|operational|worked|running)\b|\b(?:used|rode)\b.*\b(?:lift|elevator)\b/i,
 };
 const BARRIER: Record<Feature, RegExp> = {

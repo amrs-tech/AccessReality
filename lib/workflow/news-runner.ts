@@ -8,6 +8,7 @@ import { AppError } from '../server/errors';
 import { hash,stable } from '../server/crypto';
 import { serpapiSearch } from '../providers/serpapi';
 import { ProviderError } from '../providers/errors';
+import { STEP_PROVIDER_DEADLINE_MS } from '../providers/deadlines';
 import { newsParams,normalizeNews } from '../news/normalize';
 
 interface NewsDependencies {client?:SupabaseClient;search?:typeof serpapiSearch;refreshCredits?:()=>Promise<unknown>;requestId?:string}
@@ -38,7 +39,7 @@ export async function advanceNewsCheck(sessionId:string,checkId:string,version:n
       attemptId=reservation.attempt_id;if(e.SEARCH_ENABLED!=='true')throw new AppError('search_disabled',503);
       if(Date.now()-started>18000)throw new AppError('deadline_before_dispatch',503);
       requireRpc(await rpc('mark_dispatch',{p_attempt_id:attemptId,p_lease_token:held.lease_token},client));dispatched=true;
-      const response=await (deps.search||serpapiSearch)(params,{apiKey:e.SERPAPI_API_KEY,timeoutMs:Math.max(1,Math.min(25000,35000-(Date.now()-started)))});
+      const response=await (deps.search||serpapiSearch)(params,{apiKey:e.SERPAPI_API_KEY,timeoutMs:Math.max(1,STEP_PROVIDER_DEADLINE_MS-(Date.now()-started))});
       raw=response.payload;retrievedAt=response.retrievedAt;providerId=response.providerSearchId;payload={...raw,__retrievedAt:retrievedAt};
       console.info(JSON.stringify({requestId:deps.requestId,jobId:job.id,attemptId,engine:'google_news',status:'success',providerSearchId:providerId,durationMs:response.durationMs}));
     }

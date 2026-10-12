@@ -1,7 +1,7 @@
 import 'server-only';
 import { z } from 'zod';
 export const envSchema = z.object({
-  SERPAPI_API_KEY:z.string().min(1), GEMINI_API_KEY:z.string().min(1), GEMINI_MODEL:z.string().default('gemini-3.1-flash-lite'),
+  SERPAPI_API_KEY:z.string().min(1), GEMINI_API_KEY:z.string().min(1), GEMINI_MODEL:z.string().default('gemini-3.5-flash-lite'),
   SUPABASE_URL:z.url(), SUPABASE_SERVICE_ROLE_KEY:z.string().min(1), DEMO_ACCESS_CODE:z.string().min(8), ADMIN_API_SECRET:z.string().min(32),
   SESSION_HMAC_SECRET:z.string().min(32), RATE_LIMIT_HMAC_SECRET:z.string().min(32), APP_ORIGIN:z.url(),
   SEARCH_ENABLED:z.enum(['true','false']).default('false'),

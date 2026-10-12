@@ -19,6 +19,28 @@ function claim(s: Source, feature: Feature, polarity: "supports" | "barrier" | "
   return { id: `${s.id}-${feature}`, venueId: venue.id, sourceId: s.id, feature, polarity, originalQuote: s.text, quoteStart: 0, quoteEnd: s.text.length, jsonPointer: null, scope, observedAt: s.observedAt, publishedAt: s.publishedAt, editedAt: s.editedAt, retrievedAt: s.retrievedAt, datePrecision: "timestamp", temporalKind: feature === "lift_operational" ? "operational" : "structural", venueMatch: "exact", extractionStatus: "accepted" };
 }
 const entrance: Requirement = { feature: "entrance_step_free", priority: "must_have" };
+describe("literal facility wording from public reviews", () => {
+  it("plural elevators explicitly establish presence and never operation", () => {
+    const s = source("There are elevators available throughout the premises.");
+    const proposed = ["lift_present", "lift_operational"].map(feature => ({ sourceId: s.id, feature, polarity: "supports", originalQuote: s.text, scope: { entrance: null, floor: null, facility: null, conditions: [] } }));
+    const validated = validateExtractedClaims(proposed, [s], venue.id, AS_OF);
+    expect(validated.accepted.find(c => c.feature === "lift_present")?.polarity).toBe("supports");
+    expect(validated.accepted.some(c => c.feature === "lift_operational" && c.polarity === "supports")).toBe(false);
+  });
+  it("an explicitly dedicated restroom is preserved without inventing dimensions", () => {
+    const s = source("There is one specific restroom for wheel chair users.");
+    const validated = validateExtractedClaims([{ sourceId: s.id, feature: "accessible_restroom", polarity: "supports", originalQuote: s.text, scope: { entrance: null, floor: null, facility: null, conditions: [] } }], [s], venue.id, AS_OF);
+    expect(validated.accepted).toHaveLength(1);
+    expect(validated.accepted[0].originalQuote).toBe(s.text);
+    expect(validated.accepted[0].scope).toEqual({ entrance: null, floor: null, facility: null, conditions: [] });
+  });
+  it("general mall access and designated parking cannot support parking accessibility", () => {
+    const s = source("The mall is wheelchair accessible with designated parking.");
+    const validated = validateExtractedClaims([{ sourceId: s.id, feature: "accessible_parking", polarity: "supports", originalQuote: s.text, scope: { entrance: null, floor: null, facility: null, conditions: [] } }], [s], venue.id, AS_OF);
+    expect(validated.accepted).toHaveLength(0);
+    expect(validated.rejected[0].reason).toBe("support_not_entailed");
+  });
+});
 describe("manually labeled synthetic extraction validation quality gate", () => {
   const metrics = { examples: SYNTHETIC_EXTRACTION_QUALITY.length, accepted: 0, correctFeaturePolarity: 0, unsupportedClaims: 0, invalidCitations: 0, falsePositiveSupport: 0, unresolvedAmbiguous: 0 };
   for (const example of SYNTHETIC_EXTRACTION_QUALITY) it(example.id, () => {

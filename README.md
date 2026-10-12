@@ -4,6 +4,27 @@
 
 P0 application implemented. Hosted Supabase migrations, real SerpApi response shapes and Gemini extraction/action selection have been verified with the owner's credentials. Offline tests use labeled synthetic evidence only. See [verification](docs/verification.md) for actual outcomes and remaining deployment gates. There is no production mock-data switch.
 
+## Using a hosted demo
+
+**Visitors do not need their own SerpApi, Gemini, Supabase, or admin API keys.** The deployment owner supplies those credentials on the server. Visitors use the website and never configure `.env.local` or install development tools.
+
+The current application requires an **owner-provided demo access code** to unlock live searches and create a private 24-hour report session. This code is an application access gate, not a provider API key. Obtain it privately from the owner; it is not published in this repository. Opening the landing page requires no code. Public hosting does not automatically remove the access gate. Code-free anonymous access is not implemented in this version.
+
+No verified public deployment URL is configured in this repository. GitHub has no recorded deployment, and there is no linked local Vercel project. The working local address is [http://localhost:3000](http://localhost:3000). The deployment instructions below are for the owner; add a public URL only after verifying it.
+
+## Run the interface without live credentials
+
+Install Node.js **22.x** and Git, then run:
+
+```powershell
+git clone https://github.com/amrs-tech/AccessReality.git
+cd AccessReality
+npm ci
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000). The landing page and `/api/health` work without provider credentials. Live venue discovery and investigations require the owner setup below. Offline tests also work without real credentials; their synthetic evidence is confined to test interceptions and never enables a mock production investigation.
+
 ## What it does
 
 - Seven explicit requirements with must-have / preferred / not-needed priorities; lift access expands into presence and operation.
@@ -29,7 +50,7 @@ The owner's updated policy replaces the original universal five-search limit. A 
 
 A completed run can still need confirmation. More searches do not establish unsupported accessibility facts. A partial brief separately means some evidence could not be fully validated or processed; rejected claims never establish fit. The headline and its must-have counts appear before the requirements controls and progress details on desktop and mobile. Use **View detailed report** for the evidence and questions, or reassess the saved corpus without searches.
 
-## Local setup (Windows PowerShell)
+## Owner setup for live local features (Windows PowerShell)
 
 Use Node.js **22.x** (verified locally with 22.22.2). All direct dependencies and the Supabase CLI are pinned; use the committed lockfile.
 
@@ -38,7 +59,7 @@ npm ci
 npm run setup:local
 ```
 
-Fill `.env.local` with a SerpApi key, a Gemini key with access to the configured free-tier model, and a Supabase Free project's URL/server secret. `npm run setup:local` generates only missing `DEMO_ACCESS_CODE` and three distinct 32-byte secrets for `ADMIN_API_SECRET`, `SESSION_HMAC_SECRET`, `RATE_LIMIT_HMAC_SECRET`; it preserves existing values and never prints secrets. Read `DEMO_ACCESS_CODE` in that ignored file to sign in. Never put secrets in browser variables, source, terminal command arguments or screenshots. Set `APP_ORIGIN=http://localhost:3000`. Keep `SEARCH_ENABLED=false` until setup succeeds. No provider credentials are supplied with this repository.
+`npm run setup:local` creates `.env.local` from `.env.example` when needed and generates only missing `DEMO_ACCESS_CODE` and three distinct 32-byte secrets for `ADMIN_API_SECRET`, `SESSION_HMAC_SECRET`, `RATE_LIMIT_HMAC_SECRET`. It preserves existing values and never prints secrets. Fill the remaining provider values locally: a SerpApi key, a Gemini key with access to **`gemini-3.5-flash-lite`** (the verified default), and the intended Supabase project's URL/server secret. Read `DEMO_ACCESS_CODE` in that ignored file to sign in. Set `APP_ORIGIN=http://localhost:3000` and keep `SEARCH_ENABLED=false` until setup succeeds. No real credentials are supplied with this repository. All these values are server-only; do not prefix credentials with `NEXT_PUBLIC_`, put them in source, or include them in screenshots or recordings.
 
 Supabase server credentials can be the project's supported secret key or legacy service-role key. Do not use its publishable/anon key. Migrations enforce service-role privileges and no browser access.
 
@@ -69,6 +90,45 @@ Open [localhost](http://localhost:3000), enter the private access code, choose r
 The demo access code is an application gate that protects the shared search/model allowance and creates a private 24-hour session for report ownership and resume. SerpApi and Gemini do not require this code; their credentials stay on the server. It avoids account registration or collection of personal details. Sign in before recording the demo so the access code remains off-screen. Removing the gate from a public deployment would allow anonymous visitors to consume the owner's allowance.
 
 The front page and `/api/health` run without credentials, but the real investigation requires durable Supabase and providers. A disabled database or environment kill switch prevents new dispatches; saved reports remain readable. No Docker is needed for a local Next.js app connected to hosted Supabase. The database test script creates its own disposable PostgreSQL instance and never resets a remote project.
+
+To run the production build locally after completing owner setup:
+
+```powershell
+npm run build
+npm start -- --hostname 127.0.0.1
+```
+
+Keep `APP_ORIGIN=http://localhost:3000` and open that exact address. Stop an existing process on port 3000 before starting another. Rebuild after source changes and restart after environment changes.
+
+## Run the offline checks
+
+From the repository directory after `npm ci`:
+
+```powershell
+npm run typecheck
+npm run lint
+npm test
+npm run test:db
+```
+
+These checks do not require real provider keys or a hosted Supabase project. `test:db` starts a disposable PostgreSQL instance in an ignored workspace folder and removes it after testing; it does not read the hosted database URL or reset a remote database.
+
+For browser and accessibility tests, use an installed Chrome:
+
+```powershell
+$env:PLAYWRIGHT_CHANNEL='chrome'
+npm run test:e2e
+```
+
+Alternatively, install the browser matching the pinned Playwright package and run without the channel override:
+
+```powershell
+Remove-Item Env:PLAYWRIGHT_CHANNEL -ErrorAction SilentlyContinue
+npx playwright install chromium
+npm run test:e2e
+```
+
+The browser tests start their own local server on port **3100**, disable live search, and intercept app APIs with labeled synthetic fixtures. They are separate from the live provider checks. Finish by running `npm run build`. On Windows, use `npm.cmd` / `npx.cmd` if PowerShell blocks the corresponding `.ps1` launchers.
 
 ## Checks and owner commands
 
@@ -125,7 +185,7 @@ Gemini's global ceiling is an owner-configured limit of 1000 attempts, not a ret
 
 For the initial **30-search maximum** verification allocation, set `VERIFICATION_MODE=true` in the running app and local `.env.local`, enable searches deliberately, then run the explicit live scripts. This separate allocation remains unchanged by the expanded owner demo policy. The server tags jobs into a durable allocation bucket; clients cannot select it or change caps. Confirm there is enough allocation for the intended finite run before starting. Scripts write sanitized results under ignored `.verification/`. `LIVE_APP_URL` can select the authorized deployed URL when its origin matches `APP_ORIGIN`. For ordinary owner-controlled demos after verification, set `VERIFICATION_MODE=false` and restart; the reserve, global, day, session, job and time limits still apply. Model quality checks make one Gemini request each; its account quota is not exposed as a verified balance.
 
-Provider failures produce readable partial briefs; timeout/network ambiguity consumes the reservation and prevents silent replay. Known429/5xx errors have at most one later capped retry. Text extraction failure preserves public sources. Invalid model planning uses a labeled deterministic fallback. Closing a browser pauses initiation, not already dispatched requests.
+Provider failures produce readable partial briefs; timeout/network ambiguity consumes the reservation and prevents silent replay. Known429/5xx errors have at most one later capped retry. Text extraction failure preserves public sources. Invalid model planning uses a labeled deterministic fallback. If an older uncertain request blocks an optional check before any new dispatch, a fully processed corpus can finish with that limit disclosed; remaining requirements stay unconfirmed. Completed empty Google News results are shown as no matching reports, not as provider errors or an all-clear. Closing a browser pauses initiation, not already dispatched requests.
 
 Source photos are bounded to four listing references and two per sampled review, with24 retained per investigation and12 distinct photos displayed. Only known public Google photo CDN URLs are accepted; browser loading uses no-referrer, lazy rendering and an unavailable-image fallback. No image files are downloaded into Supabase, no reviewer profiles are retained, and no separate photo API/search engine is used. Photo-only reviews with an observed review ID are retained without inventing an excerpt and are excluded from text extraction. Maps/details/review cache versions changed to collect these optional fields; Google web-snippet cache keys are preserved. Changing an existing requirement still reuses the saved corpus with zero new searches.
 
@@ -140,16 +200,29 @@ Source photos are bounded to four listing references and two per sampled review,
    npx vercel@63.1.2 link
    npx vercel@63.1.2 --prod
    ```
-4. Set all server-only `.env.example` values in Production. Initially disable search. Set `APP_ORIGIN` to the exact production HTTPS origin and redeploy. Use `APP_COMMIT_SHA` for release metadata if desired. Preview should disable search or share the same conservative DB allocation; no independent counter for the same key.
+4. Set the server-only values from `.env.example` in Vercel's Production environment, using real owner credentials rather than empty example values. Keep `VERIFICATION_MODE=false` for ordinary visitor sessions and initially set `SEARCH_ENABLED=false`. Set `APP_ORIGIN` to the exact production HTTPS origin, with no path or trailing slash, then redeploy. Set `DEMO_ACCESS_CODE` privately and share it only with intended visitors; visitors need no provider API keys. Use `APP_COMMIT_SHA` for release metadata if desired. Preview should disable search or share the same conservative DB allocation; no independent counter for the same key.
 5. Check `/api/health`, confirm Vercel Fluid Compute and effective60-second step-route duration, reconcile the shared budget deliberately, then enable searches and redeploy.
 6. Run the real deployed smoke in an incognito session, including at least one legitimate uncached dispatch and a second-session ownership check. A green build alone does not verify deployment. Confirm deployment protection settings and Supabase activation before judges visit.
 
-The source repository is [amrs-tech/AccessReality](https://github.com/amrs-tech/AccessReality). The Vercel CLI account check reported logged out. No authorized Vercel project/token is configured here, so no deployment URL was created. Hobby eligibility/free model quotas are account-specific; no billing or paid fallback is enabled.
+The source repository is [amrs-tech/AccessReality](https://github.com/amrs-tech/AccessReality). No verified deployment URL or linked local Vercel project is currently configured; GitHub reports no deployment records. Importing or pushing this source does not itself confirm a working public deployment. Hobby eligibility/free model quotas are account-specific; no billing or paid fallback is enabled.
+
+## Keep credentials and private outputs out of Git
+
+`.env.local` and other real environment files are ignored; `.env.example` contains empty credential placeholders and non-secret defaults only. Private verification records, exported reports, videos, traces, test databases, dependencies, and build outputs are also ignored. Do not force-add `.env*`, `.verification/`, `demo-output/`, `test-results/`, `.next/`, or `node_modules/`. Documentation uses placeholders instead of private run identifiers. Configure deployed credentials in the hosting environment, never in Git.
+
+Before pushing, inspect `git status --short` and the staged diff. With the [Gitleaks CLI](https://github.com/gitleaks/gitleaks) installed, scan all reachable history and the staged changes with redacted output:
+
+```powershell
+gitleaks git . --log-opts="--all" --redact
+gitleaks git . --pre-commit --staged --redact
+```
+
+The 12 October audit scanned the existing commit history and compared every tracked/relevant working file and stored Git blob against the locally configured credentials: no credential matches or scanner-detected leaks were found. `.env.local`, private diagnostics and the recording stay outside Git. Use your GitHub noreply address for new commits when you want to keep your personal email private; Git author and committer metadata are separate from file contents. A secret committed in the future must be revoked or rotated and removed from history; deleting it only from the latest file is insufficient.
 
 ## Hackathon submission
 
-Recommended track: Knowledge & Public Interest. [Local demo script](docs/demo-script.md) describes a 2:40 recording with actual live evidence and disclosure of cache reuse. **Recording link: not yet recorded. Deployment URL: not created.** Add only real links after verifying incognito access. Do not submit synthetic test examples as a live demo.
+Recommended track: Knowledge & Public Interest. The owner-requested **2:52 captioned local demo** was recorded on 12 October 2026 with successful investigation, news, photo, reassessment, export and gap-control checks. Its local path is `demo-output/successful-demo/AccessReality-Successful-Live-Demo.mp4`; the video and private report exports are deliberately excluded from Git. See the [demo script](docs/demo-script.md) and [actual verification](docs/verification.md) for cache disclosure and evidence limits. **Public video link: not published. Public deployment URL: not configured.** Add only real public links after verifying access. Do not submit synthetic test examples as a live demo.
 
-AI tooling disclosure: OpenAI Codex generated and reviewed code, SQL, tests and documentation with parallel coding assistants. The application uses Google Gemini for public-evidence extraction and bounded action selection. No AI-created venue reviews, measurements or demonstration allegations were used. The owner must review the code and record the locally working real-provider flow.
+AI tooling disclosure: OpenAI Codex generated and reviewed code, SQL, tests and documentation; earlier development also used parallel coding assistants. The application uses Google Gemini for public-evidence extraction and bounded action selection. No AI-created venue reviews, measurements or demonstration allegations were used. The owner should review the code and verify any public deployment before sharing it.
 
 Further details: [architecture](docs/architecture.md), [actual verification](docs/verification.md), [acceptance checklist](docs/checklist.md).

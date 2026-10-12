@@ -7,11 +7,11 @@ import { advanceJob,buildReport,eligibleMenu } from '../../lib/workflow/runner';
 import { ProviderError } from '../../lib/providers/errors';
 import { normalizeDetails } from '../../lib/adapters/place';
 import { makeSource } from '../../lib/evidence/normalize';
-const mock = vi.hoisted(()=>({job:null as any,deny:false,markDenial:null as string|null,down:false,calls:[] as string[],cacheReply:null as any,savedCache:null as any,commits:[] as any[]}));
+const mock = vi.hoisted(()=>({job:null as any,deny:false,reserveDenial:null as string|null,markDenial:null as string|null,down:false,calls:[] as string[],cacheReply:null as any,savedCache:null as any,commits:[] as any[]}));
 vi.mock('../../lib/server/db',()=>({db:vi.fn(),selectOne:vi.fn(async(table:string)=>table==='provider_cache'?mock.savedCache:mock.job),rpc:vi.fn(async(name:string,args:any)=>{
   mock.calls.push(name);if(mock.down)throw new Error('Database unavailable');
   if(name==='claim_step')return {ok:true,job:structuredClone(mock.job),lease_token:'test-lease'};
-  if(name==='reserve_provider_attempt'){if(mock.deny)return {ok:false,code:'budget_exhausted'};if(mock.cacheReply)return {ok:true,kind:'cache',...mock.cacheReply};if(args.p_provider==='serpapi')mock.job.serp_reserved++;else mock.job.llm_reserved++;return {ok:true,kind:'reserved',attempt_id:randomUUID()};}
+  if(name==='reserve_provider_attempt'){if(mock.reserveDenial)return {ok:false,code:mock.reserveDenial};if(mock.deny)return {ok:false,code:'budget_exhausted'};if(mock.cacheReply)return {ok:true,kind:'cache',...mock.cacheReply};if(args.p_provider==='serpapi')mock.job.serp_reserved++;else mock.job.llm_reserved++;return {ok:true,kind:'reserved',attempt_id:randomUUID()};}
   if(name==='mark_dispatch')return mock.markDenial?{ok:false,code:mock.markDenial}:{ok:true};
   if(name==='commit_step'||name==='fail_step'){mock.commits.push(args);mock.job={...mock.job,state:args.p_state,phase:args.p_uncertain?'partial':args.p_phase,state_version:mock.job.state_version+1,stop_reason:args.p_stop_reason||args.p_code||null};return {ok:true,job:structuredClone(mock.job)};}
   throw new Error(name);
@@ -19,7 +19,7 @@ vi.mock('../../lib/server/db',()=>({db:vi.fn(),selectOne:vi.fn(async(table:strin
 const venue:Venue={id:'00000000-0000-4000-8000-000000000002',name:'Synthetic test venue',address:'Test street',googlePlaceId:'test-place-only',dataId:'test-review-only',dataCid:null,website:null,phone:null,category:null,sourceUrl:'https://example.test',latitude:null,longitude:null,rating:null,provisional:false};
 beforeEach(()=>{
   Object.assign(process.env,{SERPAPI_API_KEY:'test-only',GEMINI_API_KEY:'test-only',SUPABASE_URL:'https://example.supabase.co',SUPABASE_SERVICE_ROLE_KEY:'test-only',DEMO_ACCESS_CODE:'test-code',ADMIN_API_SECRET:'a'.repeat(32),SESSION_HMAC_SECRET:'b'.repeat(32),RATE_LIMIT_HMAC_SECRET:'c'.repeat(32),APP_ORIGIN:'http://localhost:3000',SEARCH_ENABLED:'true'});
-  mock.calls=[];mock.commits=[];mock.cacheReply=null;mock.savedCache=null;mock.deny=false;mock.markDenial=null;mock.down=false;mock.job={id:randomUUID(),session_id:'test-session',kind:'investigation',venue_id:venue.id,input:{},state:initialState([{feature:'entrance_step_free',priority:'must_have'}],venue),phase:'details',state_version:0,serp_cap:5,serp_reserved:0,llm_cap:6,llm_reserved:0,next_retry_at:null,stop_reason:null} satisfies JobRow;
+  mock.calls=[];mock.commits=[];mock.cacheReply=null;mock.savedCache=null;mock.deny=false;mock.reserveDenial=null;mock.markDenial=null;mock.down=false;mock.job={id:randomUUID(),session_id:'test-session',kind:'investigation',venue_id:venue.id,input:{},state:initialState([{feature:'entrance_step_free',priority:'must_have'}],venue),phase:'details',state_version:0,serp_cap:5,serp_reserved:0,llm_cap:6,llm_reserved:0,next_retry_at:null,stop_reason:null} satisfies JobRow;
 });
 const deps=()=>({client:{from:()=>{throw new Error('Empty corpus must not query source tables');}} as any,clock:()=>new Date('2026-10-10T10:00:00Z')});
 it('budget denial causes zero actual provider dispatches',async()=>{
@@ -128,6 +128,20 @@ it('a denied optional search saves complete unknown evidence without fabricating
   expect(result.phase).toBe('finalize');expect(result.state.failedStages).toEqual([]);expect(result.state.report?.isPartial).toBe(false);
   result=await advanceJob('test-session',result.id,result.state_version,{...deps(),search});
   expect(result.phase).toBe('complete');expect(result.stop_reason).toBe('search_budget_exhausted');expect(search).not.toHaveBeenCalled();
+});
+it('a prior uncertain cache stops an undispatched optional check without replaying or marking the saved corpus partial',async()=>{
+  mock.job.phase='targeted_search';mock.job.state.pendingAction={id:'SEARCH_WEB_FEATURE:entrance_step_free:general',feature:'entrance_step_free',reason:'Synthetic follow-up'};mock.reserveDenial='ambiguous_dispatch';
+  const search=vi.fn();let result=await advanceJob('test-session',mock.job.id,0,{...deps(),search});
+  expect(result.state.failedStages).toEqual([]);expect(result.state.report?.isPartial).toBe(false);
+  expect(result.state.report?.limitations).toContain('An optional gap check was blocked by an earlier uncertain search. No new request was sent; remaining requirements still need confirmation.');
+  expect(result.serp_reserved).toBe(0);expect(search).not.toHaveBeenCalled();expect(mock.calls).not.toContain('mark_dispatch');
+  result=await advanceJob('test-session',result.id,result.state_version,{...deps(),search});
+  expect(result.phase).toBe('complete');expect(result.state.report?.overall).toBe('needs_confirmation');
+});
+it('a blocked optional check cannot hide unprocessed evidence',async()=>{
+  mock.job.phase='targeted_search';mock.job.state.pendingAction={id:'SEARCH_WEB_FEATURE:entrance_step_free:general',feature:'entrance_step_free',reason:'Synthetic follow-up'};mock.reserveDenial='ambiguous_dispatch';
+  mock.job.state.sources=[makeSource({venueId:venue.id,kind:'maps_review',text:'The entrance is step-free.',sourceUrl:'https://example.test/review',providerReviewId:'synthetic-review',providerSearchId:'synthetic-search',engine:'google_maps_reviews',retrievedAt:'2026-10-10T10:00:00Z',publishedAt:null,editedAt:null,observedAt:null,selectionMethod:'newest',metadata:{venueMatch:'exact'}})];
+  const result=await advanceJob('test-session',mock.job.id,0,deps());expect(result.state.report?.isPartial).toBe(true);expect(result.state.optionalCheckLimits).toBeUndefined();
 });
 it('an optional reservation released at the dispatch credit check preserves a complete evidence report',async()=>{
   mock.job.phase='targeted_search';mock.job.state.pendingAction={id:'SEARCH_REVIEWS_FEATURE:entrance_step_free',feature:'entrance_step_free',reason:'Synthetic follow-up'};mock.markDenial='budget_exhausted';

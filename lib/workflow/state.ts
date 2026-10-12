@@ -10,6 +10,7 @@ export interface JobState {
   lastMessage?:string;
   validationRejections?:{reason:string;sourceId:string|null}[];
   failureStopReason?:string;
+  optionalCheckLimits?:string[];
   newsResult?:NewsCheckResult|null;
   newsErrorCode?:string|null;
 }

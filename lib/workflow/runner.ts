@@ -12,6 +12,7 @@ import { reviewsParams,normalizeReviews } from '../adapters/reviews';
 import { normalizeWeb } from '../adapters/web';
 import { serpapiSearch,type SerpApiResult } from '../providers/serpapi';
 import { ProviderError } from '../providers/errors';
+import { STEP_PROVIDER_DEADLINE_MS } from '../providers/deadlines';
 import { extractClaims,chooseAction } from '../providers/gemini';
 import { validateExtractedClaims,EXTRACTOR_VERSION } from '../evidence/validate';
 import { claimIdentityId } from '../evidence/identity';
@@ -25,7 +26,7 @@ export interface RunnerDependencies {client?:SupabaseClient;search?:typeof serpa
 const acceptedCount=(s:JobState)=>s.claims.filter(c=>c.extractionStatus==='accepted').length;
 export function buildReport(job:JobRow,asOf:Date):Report {
   if(!job.state.venue)throw new AppError('invalid_request',400);
-  return assess({venue:job.state.venue,requirements:job.state.requirements,sources:job.state.sources,claims:job.state.claims,asOf:asOf.toISOString(),isPartial:job.state.failedStages.length>0||job.phase==='partial',limitations:job.state.failedStages.map(f=>`Stage unavailable or incomplete: ${f}.`),reviewsExamined:job.state.reviewsExamined});
+  return assess({venue:job.state.venue,requirements:job.state.requirements,sources:job.state.sources,claims:job.state.claims,asOf:asOf.toISOString(),isPartial:job.state.failedStages.length>0||job.phase==='partial',limitations:[...job.state.failedStages.map(f=>`Stage unavailable or incomplete: ${f}.`),...(job.state.optionalCheckLimits||[])],reviewsExamined:job.state.reviewsExamined});
 }
 interface MenuAction {id:string;feature:Feature;reason:string;kind:'reviews'|'web'}
 export function eligibleMenu(job:JobRow,cacheCandidates=false):MenuAction[] {
@@ -84,7 +85,7 @@ export async function advanceJob(sessionId:string,jobId:string,version:number,de
     if(params.engine==='google_maps_reviews')s.reviewRequests++;
     if(params.engine==='google')s.webRequests++;
     if(reservation.kind==='cache')return {payload:reservation.payload,retrievedAt:reservation.retrieved_at,providerSearchId:reservation.payload.search_metadata?.id||null,durationMs:0};
-    const result=await (deps.search||serpapiSearch)(params,{apiKey:e.SERPAPI_API_KEY,timeoutMs:Math.max(1,Math.min(25000,35000-(Date.now()-started)))});payload={...result.payload,__retrievedAt:result.retrievedAt};
+    const result=await (deps.search||serpapiSearch)(params,{apiKey:e.SERPAPI_API_KEY,timeoutMs:Math.max(1,STEP_PROVIDER_DEADLINE_MS-(Date.now()-started))});payload={...result.payload,__retrievedAt:result.retrievedAt};
     console.info(JSON.stringify({requestId:deps.requestId,jobId:job.id,attemptId,engine:params.engine,status:'success',durationMs:result.durationMs,providerSearchId:result.providerSearchId}));
     return result;
   };
@@ -123,7 +124,7 @@ export async function advanceJob(sessionId:string,jobId:string,version:number,de
       else if(job.llm_reserved>=job.llm_cap){s.failedStages.push('unprocessed_sources_llm_cap');phase='finalize';stopReason='llm_budget_exhausted';}
       else {
         const key=`EXTRACT:${hash(stable(batch.map(x=>x.id)))}`;await reserve('gemini',{model:e.GEMINI_MODEL},key);
-        const extracted=await (deps.extract||extractClaims)(batch,s.venue!,{apiKey:e.GEMINI_API_KEY,model:e.GEMINI_MODEL,timeoutMs:Math.min(25000,45000-(Date.now()-started))});
+        const extracted=await (deps.extract||extractClaims)(batch,s.venue!,{apiKey:e.GEMINI_API_KEY,model:e.GEMINI_MODEL,timeoutMs:Math.max(1,STEP_PROVIDER_DEADLINE_MS-(Date.now()-started))});
         const validated=validateExtractedClaims(extracted.claims,batch,s.venue!.id,now().toISOString());newClaims=validated.accepted;
         if(validated.rejected.length){s.failedStages.push('extraction_validation_rejected');s.validationRejections=[...(s.validationRejections||[]),...validated.rejected.map(r=>({reason:r.reason,sourceId:typeof (r.candidate as any)?.sourceId==='string'?(r.candidate as any).sourceId:null}))].slice(0,64);}
         s.extractedSourceIds.push(...batch.map(x=>x.id));s.extractionBatches++;phase=outstanding.length>batch.length?'extract':'assess';
@@ -143,7 +144,7 @@ export async function advanceJob(sessionId:string,jobId:string,version:number,de
       else {
         await reserve('gemini',{model:e.GEMINI_MODEL},`PLAN:${s.targetedActions}`);
         const actions:AllowedAction[]=[...menu.map(a=>({id:a.id,kind:a.kind==='reviews'?'SEARCH_REVIEWS_FEATURE' as const:'SEARCH_WEB_FEATURE' as const,feature:a.feature,params:{},key:a.id,reason:a.reason})),stopAction()];
-        const chosen=await (deps.plan||chooseAction)(actions,{states:s.report!.requirements.map(r=>({feature:r.feature,status:r.status})),excerpts:s.sources.slice(-5).map(x=>x.text),priorResults:s.visitedActionKeys,remainingSearchAttempts:job.serp_cap-job.serp_reserved},{apiKey:e.GEMINI_API_KEY,model:e.GEMINI_MODEL,timeoutMs:Math.min(25000,45000-(Date.now()-started))});
+        const chosen=await (deps.plan||chooseAction)(actions,{states:s.report!.requirements.map(r=>({feature:r.feature,status:r.status})),excerpts:s.sources.slice(-5).map(x=>x.text),priorResults:s.visitedActionKeys,remainingSearchAttempts:job.serp_cap-job.serp_reserved},{apiKey:e.GEMINI_API_KEY,model:e.GEMINI_MODEL,timeoutMs:Math.max(1,STEP_PROVIDER_DEADLINE_MS-(Date.now()-started))});
         if(chosen.action.id==='STOP'&&job.search_mode==='expanded'){s.plannerMode='deterministic_fallback';s.pendingAction=menu[0];phase='targeted_search';s.lastMessage=menu[0].reason;}
         else if(chosen.action.id==='STOP'){phase='finalize';stopReason='no_eligible_actions';}
         else {const selected=menu.find(a=>a.id===chosen.action.id);if(!selected)throw new ProviderError('invalid_json','Planner selected an ineligible action');s.pendingAction={...selected,reason:selected.reason};phase='targeted_search';s.plannerMode='gemini';s.lastMessage=selected.reason;}
@@ -207,15 +208,21 @@ export async function advanceJob(sessionId:string,jobId:string,version:number,de
     const retries=s.retryCounts[actionKey]||0;const retry=Boolean(provider?.retryable)&&!provider?.uncertain&&retries<1&&(job.search_mode==='expanded'||(!(actionKey.includes('REVIEWS')&&s.reviewRequests>=2)&&!(actionKey.includes('WEB')&&s.webRequests>=2)));
     s.retryCounts[actionKey]=retries+1;
     const optionalBudgetStop=code==='budget_exhausted'&&['targeted_search','plan'].includes(job.phase)&&!dispatched&&!outstandingSources().length;
+    const optionalCacheStop=code==='ambiguous_dispatch'&&job.phase==='targeted_search'&&!attemptId&&!dispatched&&!outstandingSources().length;
     let nextPhase:JobRow['phase']='finalize';
     if(job.kind==='discovery')nextPhase=retry?job.phase:'partial';
     else if(optionalBudgetStop) {s.pendingAction=null;s.failureStopReason=job.phase==='plan'?'llm_budget_exhausted':'search_budget_exhausted';s.lastMessage='The available investigation allowance is used; the completed evidence checks are saved.';}
+    else if(optionalCacheStop) {
+      s.pendingAction=null;s.failureStopReason='no_eligible_actions';
+      s.lastMessage='An earlier uncertain search blocks this optional gap check. No new request was sent; the saved evidence remains available.';
+      s.optionalCheckLimits=[...new Set([...(s.optionalCheckLimits||[]),'An optional gap check was blocked by an earlier uncertain search. No new request was sent; remaining requirements still need confirmation.'])].slice(0,4);
+    }
     else if(['configuration','forbidden','provider_error','search_disabled','budget_exhausted'].includes(code)) {nextPhase='finalize';s.failedStages.push(`${job.phase}:${code}`);s.failureStopReason=code==='budget_exhausted'?(actionKey.startsWith('EXTRACT')||actionKey.startsWith('PLAN')?'llm_budget_exhausted':'search_budget_exhausted'):'upstream_unavailable';}
     else if(job.phase==='plan'&&!provider?.uncertain){const menu=await allowedMenu();s.pendingAction=menu[0]||null;s.plannerMode='deterministic_fallback';nextPhase=s.pendingAction?'targeted_search':'finalize';s.lastMessage=s.pendingAction?.reason||'Planner unavailable; keeping saved evidence.';}
     else if(retry)nextPhase=job.phase;
     else if(!provider?.uncertain){nextPhase=job.phase==='details'?'reviews':job.phase==='reviews'?'extract':'finalize';s.failedStages.push(`${job.phase}:${code}`);}
     else s.failedStages.push(`${job.phase}:ambiguous_dispatch`);
-    if(job.kind==='investigation'&&nextPhase==='finalize') {const saved=buildReport({...job,state:s,phase:optionalBudgetStop?job.phase:'partial'},now());s.report={...saved,sources:[],claims:[]};}
+    if(job.kind==='investigation'&&nextPhase==='finalize') {const saved=buildReport({...job,state:s,phase:optionalBudgetStop||optionalCacheStop?job.phase:'partial'},now());s.report={...saved,sources:[],claims:[]};}
     s.activeMs+=Date.now()-started;
     const result=await rpc('fail_step',{p_job_id:job.id,p_lease_token:lease.lease_token,p_expected_version:version,p_attempt_id:attemptId,p_code:code,p_uncertain:dispatched&&Boolean(provider?.uncertain||!provider),p_retry_at:retry?new Date(now().getTime()+Math.max(1000,(provider?.retryAfterSeconds||2)*1000)).toISOString():null,p_phase:nextPhase,p_state:s},client);
     requireRpc(result);
