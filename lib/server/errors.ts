@@ -12,4 +12,5 @@ export const messages:Record<string,string>={
   budget_exhausted:'The permitted attempt allowance is exhausted.', search_disabled:'New searches are disabled by the owner.',
   rate_limited:'Too many requests. Try again after the rate-limit window.', idempotency_conflict:'This request key has already been used for different input.',
   ambiguous_dispatch:'A previous request may have been sent. It will not be replayed automatically.',
+  visit_brief_required:'Save a completed or partial visit brief before checking the news.',
 };

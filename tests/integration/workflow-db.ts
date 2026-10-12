@@ -44,7 +44,7 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
     rpc("reserve_provider_attempt", [job.id, token, action, provider, key, { engine: "google_maps", q: "synthetic test" }, "google_maps", 21600]);
   const commit = (job: Json, token: string, attempt: string | null, options: Json = {}) => rpc("commit_step", [job.id, token,
     job.state_version, options.phase ?? "complete", options.state ?? {}, attempt, options.payload ?? { providerSearchId: "synthetic-search-id" },
-    options.sources ?? [], options.claims ?? [], options.report ?? null, options.stop ?? "no_eligible_actions", 21600]);
+    options.sources ?? [], options.claims ?? [], options.report ?? null, options.stop ?? "no_eligible_actions", options.ttl ?? 21600]);
   const observedAt = (snapshot: Json) => new Date(Math.max(Date.now(), Date.parse(snapshot.startedAt) + 2)).toISOString();
   const observe = async (remaining: number, allowIncrease = true) => {
     const begun = await rpc("begin_serpapi_balance_check", []);
@@ -61,6 +61,38 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
     assert.equal(saved.ok, true);
     return saved.job;
   };
+  const savedNewsParent = async (sid?: string, options: Json = {}) => {
+    sid = sid ?? await session();
+    const discoveryKey = randomUUID();
+    const discovery = await rpc("create_job", [sid, discoveryKey, hash(discoveryKey), "discovery", null,
+      { city: "Synthetic City", query: "Synthetic Test Venue", country: "India" }, {}]);
+    assert.equal(discovery.ok, true);
+    const discoveryLease = await lease(discovery.job);
+    const discoverySaved = await commit(discovery.job, discoveryLease.lease_token, null);
+    assert.equal(discoverySaved.ok, true);
+    const venueId = randomUUID(); const parentKey = randomUUID();
+    const parentResponse = await rpc("create_job", [sid, parentKey, hash(parentKey), "investigation", venueId,
+      { discoveryJobId: discovery.job.id, candidateId: venueId },
+      { venue: { id: venueId, name: "Synthetic Test Venue", address: "Synthetic City", googlePlaceId: `synthetic-${venueId}`,
+        dataCid: null, dataId: null, latitude: null, longitude: null, website: null, phone: null } }]);
+    assert.equal(parentResponse.ok, true);
+    const parent = parentResponse.job; const held = await lease(parent);
+    const source = { id: randomUUID(), venueId: parent.venue_id, sourceGroupKey: "synthetic-parent-source", kind: "maps_review",
+      text: "Synthetic historical visitor observation", retrievedAt: new Date().toISOString(), sourceUrl: "https://example.com/synthetic-parent" };
+    const report = { venue: parent.state.venue, generatedAt: new Date().toISOString(), overall: "needs_confirmation",
+      sources: [source], claims: [], requirements: [], isPartial: options.partial === true };
+    const state = { ...parent.state, sources: [source], claims: [], requirements: [], report: { ...report, sources: [], claims: [] } };
+    const saved = await commit(parent, held.lease_token, null, { phase: options.partial ? "partial" : "complete", state,
+      sources: [source], report: { profile_hash: hash("synthetic-news-parent-profile"), requirements: [], algorithm_version: "test-v1",
+        report, is_partial: options.partial === true } });
+    assert.equal(saved.ok, true);
+    return { parent: saved.job, discovery: discoverySaved.job, report, source };
+  };
+  const createNews = (parent: Json, key: string = randomUUID(), allocation = "operations", digest = hash(key)) =>
+    rpc("create_news_check", [parent.session_id, parent.id, key, digest, allocation]);
+  const reserveNews = (job: Json, token: string, cache = hash(randomUUID()), action = "CHECK_NEWS") =>
+    rpc("reserve_provider_attempt", [job.id, token, action, "serpapi", cache,
+      { engine: "google_news", q: '"Synthetic Test Venue" "Synthetic City" closure' }, "google_news", 3600]);
   const test = async (name: string, action: () => Promise<void>) => {
     await reset();
     await action();
@@ -81,6 +113,8 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
         await assert.rejects(pool.query("select public.current_search_policy()"), /permission denied/);
         await assert.rejects(pool.query("select public.begin_serpapi_balance_check()"), /permission denied/);
         await assert.rejects(pool.query("select public.reconcile_serpapi_balance(200,'{}',now(),30,220,true)"), /permission denied/);
+        await assert.rejects(pool.query("select public.create_news_check($1,$2,$3,$4,$5)",
+          [randomUUID(), randomUUID(), randomUUID(), hash("synthetic-private-news"), "operations"]), /permission denied/);
       }
       const grants = await admin.query("select proname,has_function_privilege('anon',p.oid,'execute') anon,has_function_privilege('authenticated',p.oid,'execute') authenticated,prosecdef from pg_proc p where pronamespace='public'::regnamespace and proname in ('create_job','claim_step','reserve_provider_attempt','mark_dispatch','commit_step','fail_step','cancel_job','save_assessment','reconcile_budget','retention_cleanup')");
       assert.equal(grants.rows.length, 10);
@@ -338,8 +372,8 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
     assert.equal(corrected.metadata.protected_reserve, undefined);
     const status = await rpc("preflight_status", []);
     assert.equal(status.ok, true);
-    assert.equal(status.migration, "006");
-    assert.equal(status.rpcVersion, "3");
+    assert.equal(status.migration, "007");
+    assert.equal(status.rpcVersion, "4");
     assert.equal(status.llmBudgetSource, "owner_attempt_cap");
     assert.equal((await server.query("select count(*)::integer count from public.job_events where event_type='llm_budget_configured'")).rows[0].count, 6);
     const anon = new Pool({ ...connection, options: "-c role=anon" });
@@ -736,6 +770,143 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
       }
     } finally { await anon.end(); await authenticated.end(); }
     assert.deepEqual((await server.query("select metadata from public.source_snapshots where id=$1", [source.id])).rows[0].metadata.original, source);
+  });
+
+  await test("News creation validates an owned saved brief, discovery locality and private inputs", async () => {
+    const fixture = await savedNewsParent(); const parent = fixture.parent; const otherSession = await session();
+    assert.equal((await rpc("create_news_check", [otherSession, parent.id, randomUUID(), hash("foreign-news"), "operations"])).code, "not_found");
+    const revoked = await session(); await admin.query("update public.demo_sessions set revoked_at=now() where id=$1", [revoked]);
+    assert.equal((await rpc("create_news_check", [revoked, parent.id, randomUUID(), hash("revoked-news"), "operations"])).code, "not_found");
+    const expired = await session(); await admin.query("update public.demo_sessions set created_at=now()-interval '2 days',expires_at=now()-interval '1 day' where id=$1", [expired]);
+    assert.equal((await rpc("create_news_check", [expired, parent.id, randomUUID(), hash("expired-news"), "operations"])).code, "not_found");
+    assert.equal((await createNews(fixture.discovery)).code, "invalid_input");
+    const unsaved = await create(parent.session_id, "investigation");
+    await admin.query("update public.jobs set phase='complete',state=state||jsonb_build_object('report',jsonb_build_object('generatedAt',now())) where id=$1", [unsaved.id]);
+    assert.equal((await createNews(unsaved)).code, "invalid_input");
+    assert.equal((await createNews(parent, "short")).code, "invalid_input");
+    assert.equal((await createNews(parent, randomUUID(), "unbounded")).code, "invalid_input");
+    assert.equal((await createNews(parent, randomUUID(), "operations", "not-a-hash")).code, "invalid_input");
+    assert.equal((await rpc("create_job", [parent.session_id, randomUUID(), hash("generic-news"), "news_check", parent.venue_id, {}, {}])).code, "invalid_input");
+    await admin.query("update public.jobs set input=input-'city' where id=$1", [fixture.discovery.id]);
+    assert.equal((await createNews(parent)).code, "invalid_input");
+    await admin.query("update public.jobs set input=input||jsonb_build_object('city','Synthetic City'),session_id=$2 where id=$1", [fixture.discovery.id, otherSession]);
+    assert.equal((await createNews(parent)).code, "invalid_input");
+    assert.equal((await server.query("select count(*)::integer count from public.jobs where kind='news_check'")).rows[0].count, 0);
+  });
+
+  await test("Concurrent news creation is idempotent, copies canonical venue and never alters a saved brief", async () => {
+    const { parent, report, source } = await savedNewsParent(undefined, { partial: true }); const key = randomUUID();
+    const before = (await server.query("select state,state_version,phase from public.jobs where id=$1", [parent.id])).rows[0];
+    const results = await Promise.all(Array.from({ length: 10 }, () => createNews(parent, key)));
+    assert.ok(results.every(result => result.ok)); assert.equal(results.filter(result => result.created).length, 1);
+    assert.equal(new Set(results.map(result => result.job.id)).size, 1);
+    const news = results[0].job;
+    assert.equal(news.kind, "news_check"); assert.equal(news.phase, "targeted_search"); assert.equal(news.serp_cap, 2);
+    assert.equal(news.serp_full_cap, 2); assert.equal(news.llm_cap, 0); assert.equal(news.step_cap, 4); assert.equal(news.search_mode, "legacy");
+    assert.equal(news.venue_id, parent.venue_id); assert.deepEqual(news.state.venue, parent.state.venue);
+    assert.deepEqual(news.input, { parentJobId: parent.id, city: "Synthetic City", briefGeneratedAt: report.generatedAt, _allocation: "operations" });
+    assert.deepEqual(news.state.sources, []); assert.deepEqual(news.state.claims, []); assert.deepEqual(news.state.requirements, []); assert.equal(news.state.report, null);
+    assert.equal((await createNews(parent, key, "operations", hash("changed-request"))).code, "idempotency_conflict");
+    const another = await savedNewsParent(parent.session_id);
+    assert.equal((await createNews(another.parent, key)).code, "idempotency_conflict");
+    assert.deepEqual((await server.query("select state,state_version,phase from public.jobs where id=$1", [parent.id])).rows[0], before);
+    assert.deepEqual((await server.query("select report from public.assessments where job_id=$1", [parent.id])).rows[0].report, report);
+    assert.equal((await server.query("select count(*)::integer count from public.job_sources where job_id=$1 and source_id=$2", [parent.id, source.id])).rows[0].count, 1);
+    assert.equal((await server.query("select count(*)::integer count from public.job_sources where job_id=$1", [news.id])).rows[0].count, 0);
+    assert.equal((await server.query("select count(*)::integer count from public.assessments where job_id=$1", [news.id])).rows[0].count, 0);
+    for (const [column, value] of [["serp_cap", 3], ["serp_full_cap", 3], ["llm_cap", 1], ["step_cap", 5]]) {
+      await assert.rejects(server.query(`update public.jobs set ${column}=$2 where id=$1`, [news.id, value]), /check constraint/);
+    }
+    const held = await lease(news);
+    assert.equal((await rpc("reserve_provider_attempt", [news.id, held.lease_token, "UNPERMITTED_LLM", "gemini", null,
+      { model: "synthetic" }, "gemini", 0])).code, "budget_exhausted");
+    assert.equal((await server.query("select count(*)::integer count from public.provider_attempts where job_id=$1", [news.id])).rows[0].count, 0);
+  });
+
+  await test("News known-failure retry consumes at most two atomic attempts and preserves its parent corpus", async () => {
+    const { parent, report } = await savedNewsParent(); let news = (await createNews(parent)).job;
+    const firstLease = await lease(news); const first = await reserveNews(news, firstLease.lease_token);
+    assert.equal(first.ok, true); assert.equal((await rpc("mark_dispatch", [first.attempt_id, firstLease.lease_token])).ok, true);
+    const failed = await rpc("fail_step", [news.id, firstLease.lease_token, news.state_version, first.attempt_id,
+      "upstream", false, null, "targeted_search", news.state]);
+    assert.equal(failed.ok, true); news = failed.job;
+    const retryLease = await lease(news); const retry = await reserveNews(news, retryLease.lease_token);
+    assert.equal(retry.ok, true); assert.equal((await rpc("mark_dispatch", [retry.attempt_id, retryLease.lease_token])).ok, true);
+    const saved = await commit(news, retryLease.lease_token, retry.attempt_id,
+      { phase: "targeted_search", state: { ...news.state, newsCheck: { articles: [] } }, stop: null });
+    assert.equal(saved.ok, true); news = saved.job; assert.equal(news.serp_reserved, 2);
+    const finalLease = await lease(news);
+    assert.equal((await reserveNews(news, finalLease.lease_token, hash("synthetic-third-news-cache"), "THIRD_NEWS_ACTION")).code, "budget_exhausted");
+    assert.equal((await commit(news, finalLease.lease_token, null, { state: news.state })).ok, true);
+    assert.deepEqual((await server.query("select status,attempt_number from public.provider_attempts where job_id=$1 order by attempt_number", [news.id])).rows,
+      [{ status: "failed", attempt_number: 1 }, { status: "completed", attempt_number: 2 }]);
+    assert.equal((await server.query("select reserved_units from public.budget_buckets where id='global:serpapi'")).rows[0].reserved_units, 2);
+    assert.deepEqual((await server.query("select report from public.assessments where job_id=$1", [parent.id])).rows[0].report, report);
+    assert.equal((await server.query("select count(*)::integer count from public.assessments where job_id=$1", [news.id])).rows[0].count, 0);
+    assert.equal((await server.query("select count(*)::integer count from public.job_sources where job_id=$1", [news.id])).rows[0].count, 0);
+  });
+
+  await test("News checks share the durable verification allocation and cannot dispatch its final credit twice", async () => {
+    await admin.query("insert into public.budget_buckets(id,limit_units,reserved_units,enabled) values('allocation:verification:serpapi',30,29,true)");
+    const { parent } = await savedNewsParent();
+    const jobs = await Promise.all(Array.from({ length: 2 }, async () => (await createNews(parent, randomUUID(), "verification")).job));
+    const fixtures = await Promise.all(jobs.map(async job => ({ job, held: await lease(job) })));
+    const reservations = await Promise.all(fixtures.map(({ job, held }) => reserveNews(job, held.lease_token)));
+    assert.equal(reservations.filter(result => result.ok).length, 1); assert.equal(reservations.filter(result => result.code === "budget_exhausted").length, 1);
+    const winnerIndex = reservations.findIndex(result => result.ok); const winner = reservations[winnerIndex];
+    assert.equal((await rpc("mark_dispatch", [winner.attempt_id, fixtures[winnerIndex].held.lease_token])).ok, true);
+    const allocation = (await server.query("select * from public.budget_buckets where id='allocation:verification:serpapi'")).rows[0];
+    assert.equal(allocation.limit_units, 30); assert.equal(allocation.reserved_units, 30);
+    assert.equal((await server.query("select reserved_units from public.budget_buckets where id='global:serpapi'")).rows[0].reserved_units, 1);
+  });
+
+  await test("Cached news is reusable across private jobs at both job and global allowance caps", async () => {
+    const { parent } = await savedNewsParent(); const cache = hash("synthetic-news-shared-cache");
+    const first = (await createNews(parent)).job; const firstLease = await lease(first); const attempt = await reserveNews(first, firstLease.lease_token, cache);
+    assert.equal(attempt.ok, true); await rpc("mark_dispatch", [attempt.attempt_id, firstLease.lease_token]);
+    const retrievedAt = new Date().toISOString(); const payload = { search_metadata: { id: "synthetic-news-search" }, __retrievedAt: retrievedAt, news_results: [] };
+    assert.equal((await commit(first, firstLease.lease_token, attempt.attempt_id, { payload, state: first.state, ttl: 3600 })).ok, true);
+    const cachedRow = (await server.query("select retrieved_at,expires_at from public.provider_cache where cache_key=$1", [cache])).rows[0];
+    assert.ok(Date.parse(cachedRow.expires_at) - Date.parse(cachedRow.retrieved_at) <= 3605000);
+    let second = (await createNews(parent)).job;
+    // Use actual reservations/dispatch commits to reach the fixed two-attempt
+    // bound, rather than manually editing any durable budget counters.
+    for (let i = 0; i < 2; i++) {
+      const held = await lease(second); const step = await reserveNews(second, held.lease_token, hash(`synthetic-news-pre-cap-${i}`), `SYNTHETIC_CHECK_${i}`);
+      assert.equal(step.ok, true); assert.equal((await rpc("mark_dispatch", [step.attempt_id, held.lease_token])).ok, true);
+      const saved = await commit(second, held.lease_token, step.attempt_id, { phase: "targeted_search", state: second.state, stop: null });
+      assert.equal(saved.ok, true); second = saved.job;
+    }
+    await admin.query("update public.budget_buckets set limit_units=reserved_units,enabled=false where id='global:serpapi'");
+    const secondLease = await lease(second);
+    const cached = await reserveNews(second, secondLease.lease_token, cache);
+    assert.equal(cached.ok, true); assert.equal(cached.kind, "cache"); assert.deepEqual(cached.payload, payload);
+    assert.equal(Date.parse(cached.retrieved_at), Date.parse(retrievedAt));
+    const saved = await commit(second, secondLease.lease_token, null, { state: second.state }); assert.equal(saved.ok, true);
+    assert.equal(saved.job.serp_reserved, 2); assert.equal(saved.job.app_cache_hits, 1);
+    const third = (await createNews(parent)).job; const thirdLease = await lease(third);
+    assert.equal((await reserveNews(third, thirdLease.lease_token, cache)).kind, "cache");
+    const thirdSaved = await commit(third, thirdLease.lease_token, null, { state: third.state });
+    assert.equal(thirdSaved.ok, true); assert.equal(thirdSaved.job.serp_reserved, 0);
+    assert.equal((await server.query("select count(*)::integer count from public.provider_attempts")).rows[0].count, 3);
+  });
+
+  await test("News lease recovery releases undispatched work and never retries ambiguous dispatch", async () => {
+    const { parent } = await savedNewsParent(); let news = (await createNews(parent)).job;
+    let held = await lease(news); const undispatched = await reserveNews(news, held.lease_token);
+    assert.equal(undispatched.ok, true); await admin.query("update public.jobs set lease_until=now()-interval '1 second' where id=$1", [news.id]);
+    held = await lease(news); news = held.job;
+    assert.equal(news.serp_reserved, 0);
+    assert.equal((await server.query("select status from public.provider_attempts where id=$1", [undispatched.attempt_id])).rows[0].status, "released");
+    const dispatched = await reserveNews(news, held.lease_token); assert.equal(dispatched.ok, true);
+    assert.equal((await rpc("mark_dispatch", [dispatched.attempt_id, held.lease_token])).ok, true);
+    await admin.query("update public.jobs set lease_until=now()-interval '1 second' where id=$1", [news.id]);
+    const recovered = await rpc("claim_step", [news.session_id, news.id, news.state_version]);
+    assert.equal(recovered.ok, false); assert.equal(recovered.code, "ambiguous_dispatch");
+    assert.equal(recovered.job.phase, "partial"); assert.equal(recovered.job.stop_reason, "ambiguous_dispatch"); assert.equal(recovered.job.serp_reserved, 1);
+    assert.equal((await rpc("claim_step", [news.session_id, news.id, recovered.job.state_version])).code, "terminal");
+    assert.equal((await server.query("select status from public.provider_attempts where id=$1", [dispatched.attempt_id])).rows[0].status, "uncertain");
+    assert.equal((await server.query("select count(*)::integer count from public.assessments where job_id=$1", [parent.id])).rows[0].count, 1);
   });
 
   await test("Retention dry run/delete keeps consumed allocation audit", async () => {

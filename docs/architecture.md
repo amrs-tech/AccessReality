@@ -38,6 +38,16 @@ Assessment is a pure function of corpus, requirements and an explicit UTC `asOf`
 
 Comparable support and barriers remain conflicting. Recent must-have barrier → reported barrier; unresolved/conflicting/historical must-have or relevant extraction failure → needs confirmation; only supported must-haves with complete required evidence processing → evidence supports requirements. Preferred support cannot hide a must-have barrier. Questions are deterministic and never sent automatically.
 
+## Visit Watch: a separate, explicit news check
+
+`POST /api/jobs/[id]/news-check` accepts only an idempotency key. The server and migration007 authenticate an unexpired private session and its saved completed/partial investigation, recover the canonical venue and city from the owned completed discovery, and snapshot the saved brief's generation time. A client cannot supply another venue, query, engine, allocation or budget. `GET` returns only the latest owned stored check and performs no provider call. Creation replay also performs no balance, rate-limit or reservation work.
+
+The service-only `create_news_check` RPC adds an auxiliary `news_check` job with no private requirements, zero Gemini allowance, two search attempts and four steps. It shares the existing lease, version, cache, reservation, dispatch fencing, ambiguity and cancellation functions. Preflight007 verifies19 private invoker RPCs. The step endpoint rechecks both parent and child ownership. Known transient failures permit one later separately reserved retry; uncertain dispatch remains consumed and terminal. The news runner commits no accessibility sources, claims or assessment revision and never changes the parent job.
+
+The dedicated [SerpApi Google News API](https://serpapi.com/google-news-api) receives one canonical venue-name/city query with `when:90d`, English/India localization and `no_cache=true` only for this engine. The application retains its own one-hour shared cache and the original provider ID/retrieval time on reuse. There is no auto-refresh, pagination, story-token follow-up, article fetch or image analysis. Groups/highlights/stories are flattened with32 candidate/12 retained article bounds. URLs, publisher names, supplied headlines/snippets and exact ISO dates are projected; absent snippets or dates are not invented. Unknown provider error shapes stay failures.
+
+Literal topic and venue/area labels support review rather than establish present incidents or branch identity. Recent publication means within14 days of original retrieval; a newer-than-brief badge compares publication to the saved brief snapshot. Questions combine those topics with private selected requirements locally and are never sent. Area news cannot establish venue impact; no matching report is not an all-clear. News never confirms current lift operation or changes the deterministic accessibility verdict. Old checks remain readable after expiry; a fresh check requires explicit user action. All global/day/session/allocation budgets and the protected reserve apply.
+
 ## Budgets and retention
 
 The owner-requested balance policy supersedes the original universal five-search cap. A server-side account check is required for a new run, and account data older than 60 seconds is refreshed before an active run dispatches another search. Atomic reservations after that account snapshot reduce its conservative effective remaining estimate. Above 50 remaining credits, a new investigation receives the expanded finite evidence menu. At 50 or fewer, or without a fresh confirmed balance, the five-search policy applies. Crossing the threshold during a run prevents checks beyond five; completed work is retained. Existing saved runs keep their original ceilings and are displayed as legacy runs.
@@ -54,6 +64,7 @@ Owner retention defaults: raw cache payloads7 days; normalized evidence/private 
 
 - [Next route handlers](https://nextjs.org/docs/app/api-reference/file-conventions/route) and [Vercel function duration](https://vercel.com/docs/functions/configuring-functions/duration).
 - [SerpApi Maps place results](https://serpapi.com/maps-place-results), [review response shapes](https://serpapi.com/google-maps-reviews-api), [account allowance](https://serpapi.com/account-api).
+- [SerpApi Google News](https://serpapi.com/google-news-api) and [status/error shapes](https://serpapi.com/api-status-and-error-codes).
 - [Gemini generateContent JSON-schema support](https://ai.google.dev/gemini-api/docs/generate-content/structured-output) and [pricing](https://ai.google.dev/gemini-api/docs/pricing). The pinned SDK exposes `responseJsonSchema`, JSON MIME, abort signals and explicit retry control. Configured default `gemini-3.1-flash-lite` still requires an actual account probe; no premium substitution.
 - [Supabase RLS](https://supabase.com/docs/guides/database/postgres/row-level-security).
 

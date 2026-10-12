@@ -69,7 +69,7 @@ export const reassessInputSchema = z.object({ requirements: requirementsSchema }
 export const stepInputSchema = z.object({ expectedVersion: z.number().int().nonnegative() }).strict();
 export const sessionInputSchema = z.object({ accessCode: z.string().min(1).max(256) }).strict();
 export interface PublicJob {
-  id: string; kind: "discovery" | "investigation"; phase: string; stateVersion: number; venue: Venue | null; candidates: Venue[];
+  id: string; kind: "discovery" | "investigation" | "news_check"; phase: string; stateVersion: number; venue: Venue | null; candidates: Venue[];
   requirements: Requirement[]; report: Report | null; providerAttempts: number; appCacheHits: number; searchCap: number; llmAttempts: number; llmCap: number;
   sourceCount: number; reviewsExamined: number; events: { id?: string; type: string; message: string; createdAt: string }[];
   stopReason: string | null; nextRetryAt: string | null; canResume: boolean; remainingAction: string | null;

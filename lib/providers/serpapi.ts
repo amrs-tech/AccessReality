@@ -4,7 +4,7 @@ import { safeImageUrl } from "../evidence/images";
 import { ProviderError } from "./errors";
 export interface SerpApiOptions { apiKey: string; fetch?: typeof fetch; now?: () => Date; timeoutMs?: number }
 export interface SerpApiResult { payload: Record<string, unknown>; providerSearchId: string | null; retrievedAt: string; durationMs: number }
-const ALLOWED_PARAMS = new Set(["engine", "type", "q", "hl", "gl", "place_id", "data_cid", "data_id", "sort_by", "query", "num", "next_page_token"]);
+const ALLOWED_PARAMS = new Set(["engine", "type", "q", "hl", "gl", "place_id", "data_cid", "data_id", "sort_by", "query", "num", "next_page_token", "no_cache"]);
 function retryAfter(value: string | null): number | null { if (!value) return null; const n = Number(value); return Number.isFinite(n) && n >= 0 ? Math.min(n, 60) : null; }
 function completedEmptyGoogleSearch(payload: Record<string, unknown>, engine: string): boolean {
   // SerpApi documents this exact HTTP-200 shape as Success with empty organic results.
@@ -16,9 +16,10 @@ function completedEmptyGoogleSearch(payload: Record<string, unknown>, engine: st
 }
 async function request(endpoint: "search" | "account", params: Record<string, string>, options: SerpApiOptions): Promise<SerpApiResult> {
   if (!options.apiKey) throw new ProviderError("configuration", "SerpApi is not configured");
+  if (params.no_cache !== undefined && (endpoint !== "search" || params.engine !== "google_news" || params.no_cache !== "true")) throw new ProviderError("configuration", "Unsupported search parameters");
   const url = new URL(endpoint === "search" ? "https://serpapi.com/search.json" : "https://serpapi.com/account.json");
   for (const [key, value] of Object.entries(params)) { if (!ALLOWED_PARAMS.has(key) || value.length > 3500) throw new ProviderError("configuration", "Unsupported search parameters"); url.searchParams.set(key, value); }
-  if (endpoint === "search" && !["google_maps", "google_maps_reviews", "google"].includes(params.engine)) throw new ProviderError("configuration", "Unsupported search engine");
+  if (endpoint === "search" && !["google_maps", "google_maps_reviews", "google", "google_news"].includes(params.engine)) throw new ProviderError("configuration", "Unsupported search engine");
   url.searchParams.set("api_key", options.apiKey);
   const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined; const started = Date.now();
   const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new ProviderError("timeout", "SerpApi timed out; the dispatch may have consumed an attempt", false, true)); }, Math.max(1, Math.min(options.timeoutMs ?? 25000, 25000))); });
@@ -38,6 +39,7 @@ async function request(endpoint: "search" | "account", params: Record<string, st
     if (!payload) throw new ProviderError("schema_drift", "SerpApi returned a non-object response");
     const emptyGoogle = endpoint === "search" && completedEmptyGoogleSearch(payload, params.engine);
     if (payload.error !== undefined && !emptyGoogle) throw new ProviderError("provider_error", "SerpApi reported an upstream error");
+    if (endpoint === "search" && params.engine === "google_news" && object(payload.search_metadata)?.status !== "Success") throw new ProviderError("schema_drift", "Google News returned no completed search status");
     return { payload: endpoint === "account" ? payload : sanitizePayload(emptyGoogle ? { ...payload, organic_results: [] } : payload), providerSearchId: string(object(payload.search_metadata)?.id, 100), retrievedAt: (options.now?.() ?? new Date()).toISOString(), durationMs: Date.now() - started };
     })(), deadline]);
   } catch (error) {
@@ -64,6 +66,23 @@ function sanitizedPlace(value: unknown): unknown {
   for (const key of ["extensions", "unsupported_extensions"]) if (place[key] !== undefined) result[key] = Array.isArray(place[key]) ? (place[key] as unknown[]).slice(0, 32).map((item) => { const extension = object(item); return extension && Array.isArray(extension.accessibility) ? { accessibility: extension.accessibility.slice(0, 24).map((v) => typeof v === "string" ? v.slice(0, 300) : null) } : {}; }) : null;
   return result;
 }
+function sanitizedNews(value: unknown, remaining: { count: number }, allowGroup: boolean): unknown {
+  const article = object(value); if (!article || remaining.count <= 0) return null;
+  const source = object(article.source);
+  const result: Record<string, unknown> = {
+    title: string(article.title, 300), link: safeUrl(article.link), snippet: string(article.snippet, 2000),
+    source: source ? { name: string(source.name, 180), title: string(source.title, 180) } : string(article.source, 180),
+    iso_date: string(article.iso_date, 100), date: string(article.date, 100),
+  };
+  if (result.link && result.title) remaining.count--;
+  // Array positions are retained for immutable JSON pointers. Tokens, pictures,
+  // authors, provider URLs, and profile/request metadata are deliberately omitted.
+  if (allowGroup) {
+    if (article.highlight !== undefined) result.highlight = sanitizedNews(article.highlight, remaining, false);
+    if (Array.isArray(article.stories)) result.stories = article.stories.slice(0, 12).map((story) => sanitizedNews(story, remaining, false));
+  }
+  return result;
+}
 export function sanitizePayload(payload: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { search_metadata: { id: string(object(payload.search_metadata)?.id, 100), status: string(object(payload.search_metadata)?.status, 100) } };
   const information = object(payload.search_information);
@@ -71,6 +90,7 @@ export function sanitizePayload(payload: Record<string, unknown>): Record<string
     const markers: Record<string, unknown> = {};
     if (information.reviews_results_state !== undefined) markers.reviews_results_state = string(information.reviews_results_state, 100);
     if (information.organic_results_state !== undefined) markers.organic_results_state = string(information.organic_results_state, 100);
+    if (information.news_results_state !== undefined) markers.news_results_state = string(information.news_results_state, 100);
     if (Object.keys(markers).length) out.search_information = markers;
   }
   if (payload.local_results !== undefined) out.local_results = Array.isArray(payload.local_results) ? payload.local_results.slice(0, 5).map(sanitizedPlace) : null;
@@ -81,6 +101,7 @@ export function sanitizePayload(payload: Record<string, unknown>): Record<string
       ...(Array.isArray(r.images) ? { images: r.images.slice(0, 2).map(safeImageUrl) } : {}) };
   }) : null;
   if (payload.organic_results !== undefined) out.organic_results = Array.isArray(payload.organic_results) ? payload.organic_results.slice(0, 8).map((item) => { const r = object(item); return r ? { title: string(r.title, 300), snippet: string(r.snippet, 4000), link: safeUrl(r.link), date: string(r.date, 100) } : null; }) : null;
+  if (payload.news_results !== undefined) { const remaining = { count: 32 }; out.news_results = Array.isArray(payload.news_results) ? payload.news_results.slice(0, 12).map((article) => sanitizedNews(article, remaining, true)) : null; }
   if (payload.topics !== undefined) out.topics = Array.isArray(payload.topics) ? payload.topics.slice(0, 20).map((topic) => ({ keyword: string(object(topic)?.keyword, 100) })) : [];
   const pagination = object(payload.serpapi_pagination); if (pagination) out.serpapi_pagination = { next_page_token: string(pagination.next_page_token, 3000) };
   return out;
