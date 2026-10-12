@@ -53,7 +53,7 @@ export function dedupeSources(sources: Source[]): Source[] {
 export function immutableTextBatches(sources: Source[]): Source[][] {
   const batches: Source[][] = []; let batch: Source[] = []; let size = 0;
   // Ambiguous branches remain in the ledger but cannot enter production claim extraction.
-  for (const source of dedupeSources(sources).filter((s) => s.kind !== "maps_attribute" && s.metadata.venueMatch === "exact")) {
+  for (const source of dedupeSources(sources).filter((s) => s.kind !== "maps_attribute" && s.text.trim().length > 0 && s.metadata.venueMatch === "exact")) {
     if ((size + source.text.length > 24000 || batch.length >= 32) && batch.length) { batches.push(batch); batch = []; size = 0; }
     batch.push(source); size += source.text.length;
   }

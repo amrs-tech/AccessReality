@@ -60,7 +60,11 @@ async function main() {
   }
 }
 
-main().catch((error: unknown) => {
+main().then(() => {
+  // All gates and awaited database cleanup completed. Windows transpiler helpers
+  // can retain handles after that point; end the verified run explicitly.
+  process.exit(0);
+}).catch((error: unknown) => {
   console.error("Real database tests failed:", error instanceof Error ? error.message : String(error));
   // embedded-postgres installs an exit hook; an explicit status is needed to preserve failure.
   process.exit(1);

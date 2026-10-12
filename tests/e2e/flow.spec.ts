@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import type { Report, Requirements, Venue } from '../../lib/contracts';
+import type { EvidenceImage, Report, Requirements, Venue } from '../../lib/contracts';
 import type { Job } from '../../components/ui-contracts';
 import { defaultRequirements } from '../../components/ui-contracts';
 
@@ -344,4 +344,94 @@ test('saved legacy reports keep their limit and explain how new investigations u
   await expect(page.locator('.reassess-controls')).toContainText('Unconfirmed balances also use the smaller limit. Fresh app cache entries may be reused.');
   await expect(page.getByRole('button', { name: 'Investigate remaining gaps' })).toBeVisible();
   expect(fake.counts().steps).toBe(0);
+});
+
+// Intercepted raster and photo references remain exclusively in this offline browser test.
+const syntheticPhotoUrl = 'https://lh3.googleusercontent.com/p/SYNTHETIC-TEST-PHOTO';
+const syntheticRaster = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6qEIAAAAASUVORK5CYII=', 'base64');
+function syntheticPhoto(index = 0): EvidenceImage {
+  return { id: `synthetic-photo-${index}`, url: `${syntheticPhotoUrl}-${index}`, sourceUrl: 'https://example.com/synthetic-test-photo-source',
+    providerSearchId: 'synthetic-provider-id', retrievedAt: stamp, capturedAt: null, jsonPointer: `/reviews/0/images/${index}`, attribution: 'Google Maps review photo' };
+}
+function reportWithPhotos(): Report {
+  const report = makeReport('unknown', summaryRequirements);
+  const source = makeReport('complete', summaryRequirements).sources[0];
+  report.sources = [{ ...source, text: 'Synthetic unassessed photo attachment.', images: [syntheticPhoto()] }];
+  report.venue = { ...report.venue, images: [{ ...syntheticPhoto(), attribution: 'Google Maps listing' }] };
+  return report;
+}
+
+test('source photos render once with provenance and unknown photo dates without changing the assessment', async ({ page }) => {
+  const report = reportWithPhotos();
+  const fake = await fakeApi(page, { authenticated: true, savedReport: report });
+  await page.route('https://lh3.googleusercontent.com/**', route => route.fulfill({ status: 200, contentType: 'image/png', body: syntheticRaster }));
+  const response = await page.goto(`/investigate/${investigationId}`);
+  const gallery = page.getByRole('region', { name: 'Source photos' });
+  await expect(gallery).toBeVisible();
+  await expect(gallery.locator('figure')).toHaveCount(1);
+  const image = gallery.getByRole('img', { name: /Supplementary photo 1 supplied by Google Maps listing/ });
+  await image.scrollIntoViewIfNeeded();
+  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
+  await expect(image).toHaveAttribute('referrerpolicy', 'no-referrer');
+  await expect(image).toHaveAttribute('loading', 'lazy');
+  await expect(image).toHaveAttribute('src', `${syntheticPhotoUrl}-0`);
+  await expect(gallery.getByText('Photo date unknown', { exact: true })).toBeVisible();
+  await expect(gallery.locator('.photo-retrieved')).toContainText('10 Oct 2026');
+  await expect(gallery.getByRole('link', { name: /View original photo source/ })).toHaveAttribute('href', 'https://example.com/synthetic-test-photo-source');
+  await expect(gallery.getByRole('link', { name: 'Read linked source' })).toHaveAttribute('href', '#source-synthetic-source-1');
+  await expect(gallery.getByText(/Images are not analysed/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Requirements not confirmed — check with the venue before visiting.' })).toBeVisible();
+  const policy = response!.headers()['content-security-policy'];
+  expect(policy).toContain('https://lh3.googleusercontent.com');
+  expect(policy).not.toContain('*.googleusercontent.com');
+  expect(fake.counts().steps).toBe(0);
+});
+
+test('unavailable source photos keep a readable fallback and the original source link', async ({ page }) => {
+  await fakeApi(page, { authenticated: true, savedReport: reportWithPhotos() });
+  await page.route('https://lh3.googleusercontent.com/**', route => route.abort());
+  await page.goto(`/investigate/${investigationId}`);
+  const gallery = page.getByRole('region', { name: 'Source photos' });
+  await gallery.scrollIntoViewIfNeeded();
+  await expect(gallery.getByText('Photo unavailable. The original source link is kept below.')).toBeVisible();
+  await expect(gallery.getByRole('img')).toHaveCount(0);
+  await expect(gallery.getByRole('link', { name: /View original photo source/ })).toHaveAttribute('href', 'https://example.com/synthetic-test-photo-source');
+  await expect(gallery.getByText('Photo date unknown', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Requirements not confirmed — check with the venue before visiting.' })).toBeVisible();
+});
+
+test('older reports have an honest photo empty state and do not fetch images', async ({ page }) => {
+  const requested: string[] = [];
+  page.on('request', request => { if (request.resourceType() === 'image') requested.push(request.url()); });
+  const fake = await fakeApi(page, { authenticated: true, savedReport: makeReport('unknown', summaryRequirements) });
+  await page.goto(`/investigate/${investigationId}`);
+  const gallery = page.getByRole('region', { name: 'Source photos' });
+  await expect(gallery.getByText(/No usable source photos are available in this saved report/)).toBeVisible();
+  await expect(gallery.locator('figure')).toHaveCount(0);
+  expect(requested).toEqual([]);
+  expect(fake.counts().steps).toBe(0);
+});
+
+test('photo gallery is bounded, rejects unsafe image URLs and stays accessible on mobile', async ({ page }, testInfo) => {
+  const report = reportWithPhotos();
+  const source = report.sources[0];
+  report.venue.images = [0, 1, 2, 3].map(syntheticPhoto);
+  report.sources = [0, 1, 2, 3, 4, 5, 6].map(index => ({ ...source, id: `synthetic-photo-source-${index}`, images: [syntheticPhoto(4 + index * 2), syntheticPhoto(5 + index * 2)] }));
+  report.sources.push({ ...source, id: 'synthetic-unsafe-photo-source', images: [{ ...syntheticPhoto(50), url: 'https://lh3.googleusercontent.com/a-/SYNTHETIC-PROFILE' }, { ...syntheticPhoto(51), url: 'http://lh3.googleusercontent.com/p/SYNTHETIC-INSECURE' }] });
+  const requested: string[] = [];
+  page.on('request', request => { if (request.resourceType() === 'image') requested.push(request.url()); });
+  await fakeApi(page, { authenticated: true, savedReport: report });
+  await page.route('https://lh3.googleusercontent.com/**', route => route.fulfill({ status: 200, contentType: 'image/png', body: syntheticRaster }));
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto(`/investigate/${investigationId}`);
+  const gallery = page.getByRole('region', { name: 'Source photos' });
+  await expect(gallery.locator('figure')).toHaveCount(12);
+  await expect(gallery.getByText('Showing the first 12 of 18 distinct source photos.')).toBeVisible();
+  await gallery.getByRole('img').first().scrollIntoViewIfNeeded();
+  await expect.poll(() => gallery.getByRole('img').first().evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
+  expect(requested.some(url => url.includes('SYNTHETIC-PROFILE') || url.includes('SYNTHETIC-INSECURE'))).toBe(false);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const audit = await new AxeBuilder({ page }).analyze();
+  expect(audit.violations).toEqual([]);
+  await page.screenshot({ path: testInfo.outputPath('synthetic-source-photos-mobile.png'), fullPage: false });
 });

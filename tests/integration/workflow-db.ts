@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Pool, type PoolConfig } from "pg";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import type { EvidenceImage, Source } from "../../lib/contracts";
 
 type Json = Record<string, any>;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -672,6 +673,69 @@ export async function runDatabaseTests(admin: Pool, server: Pool, connection: Po
     assert.equal((await server.query("select array_agg(revision order by revision) revisions from public.assessments where job_id=$1", [job.id])).rows[0].revisions.join(","), "1,2");
     const wrongReport = { ...report, sources: [{ id: randomUUID() }] };
     await assert.rejects(rpc("save_assessment", [job.session_id, job.id, revised.job.state_version, hash("profile"), [], "test-v1", wrongReport, true]), /outside job corpus/);
+  });
+
+  await test("Supplementary photo-only evidence preserves attribution, immutable snapshots and private reassessment revisions", async () => {
+    const job = await create(await session(), "investigation"); const held = await lease(job);
+    const retrievedAt = new Date().toISOString();
+    const reviewImage: EvidenceImage = { id: "synthetic-review-photo", url: "https://example.com/synthetic-review-photo.jpg",
+      sourceUrl: "https://example.com/synthetic-review", providerSearchId: "synthetic-review-search", retrievedAt,
+      capturedAt: null, jsonPointer: "/reviews/0/images/0", attribution: "Google Maps review photo" };
+    const listingImage: EvidenceImage = { id: "synthetic-listing-photo", url: "https://example.com/synthetic-listing-photo.jpg",
+      sourceUrl: "https://example.com/synthetic-venue", providerSearchId: "synthetic-listing-search", retrievedAt,
+      capturedAt: null, jsonPointer: "/place_results/thumbnail", attribution: "Google Maps listing" };
+    const venue = { ...job.state.venue, images: [listingImage] };
+    const source: Source = { id: randomUUID(), venueId: job.venue_id, sourceGroupKey: "synthetic-photo-only-review",
+      kind: "maps_review", text: "", sourceUrl: reviewImage.sourceUrl, providerReviewId: "synthetic-photo-review",
+      providerSearchId: reviewImage.providerSearchId, engine: "google_maps_reviews", retrievedAt,
+      publishedAt: null, editedAt: null, observedAt: null, selectionMethod: "newest",
+      metadata: { synthetic: true, venueMatch: "exact" }, images: [reviewImage] };
+    const requirements = [{ feature: "entrance_step_free", priority: "must_have" }];
+    const requirementReport = { ...requirements[0], status: "insufficient", claimIds: [], sourceIds: [],
+      explanation: "Synthetic photos supply no accessibility observation.", barrierToConfirm: false, conditions: [], dataQualityFlags: [] };
+    const report = { venue, requirements: [requirementReport], sources: [source], claims: [], overall: "needs_confirmation",
+      generatedAt: retrievedAt, isPartial: false, questions: [], limitations: ["Synthetic photo fixture; no image analysis."],
+      algorithmVersion: "synthetic-image-report-v1", extractorVersion: "synthetic-no-photo-extraction-v1", reviewsExamined: 1 };
+    const state = { ...job.state, venue, sources: [source], claims: [], requirements,
+      report: { ...report, sources: [], claims: [] } };
+    const saved = await commit(job, held.lease_token, null, { state, sources: [source], report: {
+      profile_hash: hash("synthetic-photo-profile"), requirements, algorithm_version: report.algorithmVersion, report, is_partial: false } });
+    assert.equal(saved.ok, true);
+    assert.deepEqual(saved.job.state.venue.images, [listingImage]); assert.deepEqual(saved.job.state.sources[0].images, [reviewImage]);
+    const snapshot = (await server.query("select text,text_hash,metadata from public.source_snapshots where id=$1", [source.id])).rows[0];
+    assert.equal(snapshot.text, ""); assert.equal(snapshot.text_hash, hash("")); assert.deepEqual(snapshot.metadata.original, source);
+    const firstReport = (await server.query("select report from public.assessments where job_id=$1 and revision=1", [job.id])).rows[0].report;
+    assert.deepEqual(firstReport.venue.images, [listingImage]); assert.deepEqual(firstReport.sources[0].images, [reviewImage]);
+    assert.equal(firstReport.sources[0].images[0].capturedAt, null); assert.equal(firstReport.overall, "needs_confirmation");
+    assert.equal((await server.query("select count(*)::integer count from public.evidence_claims")).rows[0].count, 0);
+    await assert.rejects(server.query("update public.source_snapshots set metadata=jsonb_set(metadata,'{original,images,0,url}',to_jsonb($2::text)) where id=$1",
+      [source.id, "https://example.com/synthetic-tampered.jpg"]), /Immutable/);
+    await assert.rejects(server.query("update public.assessments set report=jsonb_set(report,'{venue,images,0,url}',to_jsonb($2::text)) where job_id=$1",
+      [job.id, "https://example.com/synthetic-tampered.jpg"]), /Immutable/);
+    const revisedRequirements = [{ feature: "accessible_restroom", priority: "must_have" }];
+    const revisedReport = { ...report, requirements: [{ ...requirementReport, ...revisedRequirements[0] }] };
+    const revised = await rpc("save_assessment", [job.session_id, job.id, saved.job.state_version, hash("synthetic-photo-reassessment"),
+      revisedRequirements, report.algorithmVersion, revisedReport, false]);
+    assert.equal(revised.ok, true); assert.deepEqual(revised.job.state.venue.images, [listingImage]);
+    assert.deepEqual(revised.job.state.sources[0].images, [reviewImage]); assert.deepEqual(revised.job.state.report.venue.images, [listingImage]);
+    const secondReport = (await server.query("select report from public.assessments where id=$1", [revised.assessment_id])).rows[0].report;
+    assert.deepEqual(secondReport.sources[0].images, [reviewImage]); assert.deepEqual(secondReport.venue.images, [listingImage]);
+    assert.deepEqual(secondReport.claims, []); assert.equal(secondReport.overall, "needs_confirmation");
+    const otherSession = await session();
+    assert.equal((await rpc("claim_step", [otherSession, job.id, revised.job.state_version])).code, "not_found");
+    assert.equal((await rpc("save_assessment", [otherSession, job.id, revised.job.state_version, hash("synthetic-forbidden-photo-profile"),
+      revisedRequirements, report.algorithmVersion, revisedReport, false])).code, "not_found");
+    assert.equal((await server.query("select count(*)::integer count from public.assessments where job_id=$1", [job.id])).rows[0].count, 2);
+    assert.equal((await server.query("select count(*)::integer count from public.provider_attempts")).rows[0].count, 0);
+    const anon = new Pool({ ...connection, options: "-c role=anon" });
+    const authenticated = new Pool({ ...connection, options: "-c role=authenticated" });
+    try {
+      for (const pool of [anon, authenticated]) {
+        await assert.rejects(pool.query("select metadata from public.source_snapshots where id=$1", [source.id]), /permission denied/);
+        await assert.rejects(pool.query("select report from public.assessments where job_id=$1", [job.id]), /permission denied/);
+      }
+    } finally { await anon.end(); await authenticated.end(); }
+    assert.deepEqual((await server.query("select metadata from public.source_snapshots where id=$1", [source.id])).rows[0].metadata.original, source);
   });
 
   await test("Retention dry run/delete keeps consumed allocation audit", async () => {

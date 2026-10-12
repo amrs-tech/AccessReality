@@ -1,5 +1,6 @@
 import "server-only";
 import { object, safeUrl, string } from "../evidence/normalize";
+import { safeImageUrl } from "../evidence/images";
 import { ProviderError } from "./errors";
 export interface SerpApiOptions { apiKey: string; fetch?: typeof fetch; now?: () => Date; timeoutMs?: number }
 export interface SerpApiResult { payload: Record<string, unknown>; providerSearchId: string | null; retrievedAt: string; durationMs: number }
@@ -53,6 +54,13 @@ function sanitizedPlace(value: unknown): unknown {
   result.rating = typeof place.rating === "number" && Number.isFinite(place.rating) ? place.rating : null;
   const gps = object(place.gps_coordinates); result.gps_coordinates = { latitude: typeof gps?.latitude === "number" && Number.isFinite(gps.latitude) ? gps.latitude : null, longitude: typeof gps?.longitude === "number" && Number.isFinite(gps.longitude) ? gps.longitude : null };
   result.website = safeUrl(place.website);
+  result.thumbnail = safeImageUrl(place.thumbnail);
+  // Keep array positions for immutable JSON pointers; exclude profile images,
+  // photo-search links, SerpApi proxy URLs, and unrelated nested fields.
+  if (Array.isArray(place.images)) result.images = place.images.slice(0, 4).map((value) => {
+    const image = object(value); const thumbnail = safeImageUrl(image?.thumbnail);
+    return thumbnail ? { thumbnail } : null;
+  });
   for (const key of ["extensions", "unsupported_extensions"]) if (place[key] !== undefined) result[key] = Array.isArray(place[key]) ? (place[key] as unknown[]).slice(0, 32).map((item) => { const extension = object(item); return extension && Array.isArray(extension.accessibility) ? { accessibility: extension.accessibility.slice(0, 24).map((v) => typeof v === "string" ? v.slice(0, 300) : null) } : {}; }) : null;
   return result;
 }
@@ -69,7 +77,8 @@ export function sanitizePayload(payload: Record<string, unknown>): Record<string
   if (payload.place_results !== undefined) out.place_results = sanitizedPlace(payload.place_results);
   if (payload.reviews !== undefined) out.reviews = Array.isArray(payload.reviews) ? payload.reviews.slice(0, 20).map((item) => { const r = object(item); if (!r) return null;
     const e = object(r.extracted_snippet); const original = typeof e?.original === "string" ? e.original : typeof r.snippet === "string" ? r.snippet : "";
-    return { review_id: string(r.review_id, 300), link: safeUrl(r.link), snippet: string(r.snippet, 4000), date: string(r.date, 100), iso_date: string(r.iso_date, 100), iso_date_of_last_edit: string(r.iso_date_of_last_edit, 100), language: string(r.language, 50), truncated: original.length > 4000, extracted_snippet: e ? { original: string(e.original, 4000), translated: string(e.translated, 4000) } : null };
+    return { review_id: string(r.review_id, 300), link: safeUrl(r.link), snippet: string(r.snippet, 4000), date: string(r.date, 100), iso_date: string(r.iso_date, 100), iso_date_of_last_edit: string(r.iso_date_of_last_edit, 100), language: string(r.language, 50), truncated: original.length > 4000, extracted_snippet: e ? { original: string(e.original, 4000), translated: string(e.translated, 4000) } : null,
+      ...(Array.isArray(r.images) ? { images: r.images.slice(0, 2).map(safeImageUrl) } : {}) };
   }) : null;
   if (payload.organic_results !== undefined) out.organic_results = Array.isArray(payload.organic_results) ? payload.organic_results.slice(0, 8).map((item) => { const r = object(item); return r ? { title: string(r.title, 300), snippet: string(r.snippet, 4000), link: safeUrl(r.link), date: string(r.date, 100) } : null; }) : null;
   if (payload.topics !== undefined) out.topics = Array.isArray(payload.topics) ? payload.topics.slice(0, 20).map((topic) => ({ keyword: string(object(topic)?.keyword, 100) })) : [];

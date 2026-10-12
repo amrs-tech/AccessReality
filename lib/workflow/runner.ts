@@ -47,7 +47,12 @@ export async function advanceJob(sessionId:string,jobId:string,version:number,de
   const flagCorpusLimit=()=>{if(!s.failedStages.includes('corpus_limit'))s.failedStages.push('corpus_limit');};
   const expandedCorpus=(job.serp_full_cap??job.serp_cap)>5;
   const corpusBounds=expandedCorpus?{sources:160,text:128000,claims:192,quotes:48000}:{sources:60,text:48000,claims:96,quotes:24000};
-  const outstandingSources=()=>s.sources.filter(source=>source.kind!=='maps_attribute'&&source.metadata.venueMatch==='exact'&&!s.extractedSourceIds.includes(source.id));
+  const outstandingSources=()=>s.sources.filter(source=>source.kind!=='maps_attribute'&&source.text.trim().length>0&&source.metadata.venueMatch==='exact'&&!s.extractedSourceIds.includes(source.id));
+  const boundPhotos=()=>{
+    let photoRoom=24;
+    if(s.venue?.images){s.venue.images=s.venue.images.slice(0,Math.min(4,photoRoom));photoRoom-=s.venue.images.length;}
+    s.sources=s.sources.map(source=>{if(!source.images?.length)return source;const images=source.images.slice(0,Math.min(2,photoRoom));photoRoom-=images.length;return {...source,images};});
+  };
   const allowedMenu=async():Promise<MenuAction[]>=>{
     const menu=eligibleMenu({...job,state:s},job.serp_reserved>=job.serp_cap);
     if(job.serp_reserved<job.serp_cap)return menu;
@@ -84,7 +89,7 @@ export async function advanceJob(sessionId:string,jobId:string,version:number,de
     return result;
   };
   try {
-    s.steps++;s.lastMessage='';
+    s.steps++;s.lastMessage='';boundPhotos();
     if(phase!=='finalize'&&(s.steps>=Math.min(job.step_cap??20,e.MAX_WORKFLOW_STEPS)||s.activeMs>=300000)) {
       stopReason='time_limit';
       if(job.kind==='discovery')phase='partial';
@@ -170,15 +175,27 @@ export async function advanceJob(sessionId:string,jobId:string,version:number,de
     newSources=newSources.filter(x=>!sourceIdRemap.has(x.id));
     let textUnits=s.sources.reduce((total,source)=>total+source.text.length+(source.translatedText?.length||0),0);let sourceCount=s.sources.length;
     newSources=newSources.filter(source=>{const units=source.text.length+(source.translatedText?.length||0);if(sourceCount>=corpusBounds.sources||textUnits+units>corpusBounds.text){flagCorpusLimit();return false;}sourceCount++;textUnits+=units;return true;});
-    s.sources=dedupeSources([...s.sources,...newSources]);const availableSourceIds=new Set(s.sources.map(x=>x.id));newClaims=newClaims.filter(claim=>availableSourceIds.has(claim.sourceId));
+    s.sources=dedupeSources([...s.sources,...newSources]);
+    // Photo references are supplementary. Keep the corpus bounded without
+    // displacing validated text or claims; no image bytes enter durable state.
+    boundPhotos();
+    const availableSourceIds=new Set(s.sources.map(x=>x.id));newClaims=newClaims.filter(claim=>availableSourceIds.has(claim.sourceId));
     const claimIdentity=(claim:EvidenceClaim)=>stable({sourceId:claim.sourceId,feature:claim.feature,polarity:claim.polarity,quote:claim.originalQuote,scope:claim.scope,extractor:claim.extractorVersion});
     const claimUnits=(claim:EvidenceClaim)=>claim.originalQuote.length+stable(claim.scope).length;
     let quoteUnits=s.claims.reduce((total,claim)=>total+claimUnits(claim),0);let claimCount=s.claims.length;
     const claimKeys=new Set(s.claims.map(claimIdentity));newClaims=newClaims.filter(claim=>{const key=claimIdentity(claim);if(claimKeys.has(key))return false;if(claimCount>=corpusBounds.claims||quoteUnits+claimUnits(claim)>corpusBounds.quotes){flagCorpusLimit();return false;}claimKeys.add(key);claimCount++;quoteUnits+=claimUnits(claim);return true;});s.claims.push(...newClaims);
     // Full report revisions live in assessments, keeping the durable step state bounded.
     if(s.report)s.report={...s.report,sources:[],claims:[]};
+    while(Buffer.byteLength(JSON.stringify(s),'utf8')>500000){
+      const source=[...s.sources].reverse().find(source=>source.images?.length);
+      if(source){source.images=source.images!.slice(0,-1);continue;}
+      if(s.venue?.images?.length){s.venue.images=s.venue.images.slice(0,-1);continue;}
+      break;
+    }
+    newSources=newSources.map(source=>s.sources.find(saved=>saved.id===source.id)||source);
     while(Buffer.byteLength(JSON.stringify(s),'utf8')>500000&&newClaims.length){const removed=newClaims.pop()!;s.claims=s.claims.filter(c=>c.id!==removed.id);flagCorpusLimit();}
     while(Buffer.byteLength(JSON.stringify(s),'utf8')>500000&&newSources.length){const removed=newSources.pop()!;s.sources=s.sources.filter(source=>source.id!==removed.id);s.claims=s.claims.filter(c=>c.sourceId!==removed.id);newClaims=newClaims.filter(c=>c.sourceId!==removed.id);flagCorpusLimit();}
+    if(report)report={...report,venue:s.venue!,sources:report.sources.map(source=>s.sources.find(saved=>saved.id===source.id)||source)};
     if(actionKey&&!s.visitedActionKeys.includes(actionKey))s.visitedActionKeys.push(actionKey);
     s.activeMs+=Date.now()-started;
     const committed=requireRpc(await rpc('commit_step',{p_job_id:job.id,p_lease_token:lease.lease_token,p_expected_version:version,p_phase:phase,p_state:s,p_attempt_id:attemptId,p_payload:payload,p_sources:newSources,p_claims:newClaims,p_report:report?reportWrapper(report,s):null,p_stop_reason:stopReason,p_cache_ttl:ttl},client));

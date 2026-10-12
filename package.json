@@ -19,6 +19,7 @@
     "budget:init": "tsx --conditions=react-server scripts/init-budget.ts",
     "test:live": "tsx --conditions=react-server scripts/live-smoke.ts",
     "test:live:browser": "tsx --conditions=react-server scripts/live-browser.ts",
+    "test:live:images": "tsx --conditions=react-server scripts/live-images.ts",
     "test:live:quality": "tsx --conditions=react-server scripts/live-quality.ts",
     "retention": "tsx --conditions=react-server scripts/retention.ts"
   },

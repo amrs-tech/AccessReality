@@ -1,5 +1,7 @@
-import type { EvidenceClaim, Feature, Source, Venue } from "../contracts";
+import type { EvidenceClaim, EvidenceImage, Feature, Source, Venue } from "../contracts";
 import { claimIdentityId, makeSource, object, string } from "../evidence/normalize";
+import { identityUuid } from "../evidence/identity";
+import { safeImageUrl } from "../evidence/images";
 import { normalizeVenue } from "./maps";
 import { ProviderError } from "../providers/errors";
 export const ATTRIBUTE_MAPPING_VERSION = "maps-accessibility-labels-v1";
@@ -17,6 +19,17 @@ export function normalizeDetails(payload: unknown, venue: Venue, retrievedAt: st
   const foundPlaceId = string(place.place_id), foundCid = string(place.data_cid);
   if ((venue.googlePlaceId && foundPlaceId && foundPlaceId !== venue.googlePlaceId) || (venue.dataCid && foundCid && foundCid !== venue.dataCid)) throw new ProviderError("schema_drift", "Place response does not match the selected branch");
   const normalized = normalizeVenue(place, venue.id); const updatedVenue = normalized ? { ...venue, ...normalized, googlePlaceId: normalized.googlePlaceId ?? venue.googlePlaceId, dataCid: normalized.dataCid ?? venue.dataCid, dataId: normalized.dataId ?? venue.dataId } : venue;
+  const images: EvidenceImage[] = [];
+  const addImage = (value: unknown, jsonPointer: string) => {
+    const url = safeImageUrl(value); if (!url || images.length >= 4 || images.some((image) => image.url === url)) return;
+    const image = { url, sourceUrl: updatedVenue.sourceUrl, providerSearchId, retrievedAt: new Date(retrievedAt).toISOString(), capturedAt: null, jsonPointer, attribution: "Google Maps listing" as const };
+    images.push({ ...image, id: identityUuid({ kind: "provider-photo-snapshot-v1", venueId: venue.id, ...image }) });
+  };
+  addImage(place.thumbnail, "/place_results/thumbnail");
+  if (Array.isArray(place.images)) place.images.slice(0, 4).forEach((image, index) => addImage(object(image)?.thumbnail, `/place_results/images/${index}/thumbnail`));
+  // Retrieval does not establish when the photo was taken and does not
+  // support any accessibility claim. Keep earlier immutable references.
+  if (images.length) updatedVenue.images = images;
   const sources: Source[] = [], claims: EvidenceClaim[] = [];
   for (const field of ["unsupported_extensions", "extensions"] as const) {
     const extensions = place[field]; if (extensions === undefined) continue;

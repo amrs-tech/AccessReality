@@ -15,11 +15,19 @@ export const requirementSchema = z.object({ feature: featureSchema, priority: pr
 export const requirementsSchema = z.array(requirementSchema).max(8).refine((value) => new Set(value.map((item) => item.feature)).size === value.length, "Duplicate features are not allowed");
 export type Requirement = z.infer<typeof requirementSchema>;
 export type Requirements = Requirement[];
+// Public provider photo references only. Photos are supplementary and never assessed.
+export const evidenceImageSchema = z.object({
+  id: z.string().max(100), url: z.string().max(2048), sourceUrl: z.string().max(2048).nullable(),
+  providerSearchId: z.string().max(100).nullable(), retrievedAt: z.string(), capturedAt: z.null(),
+  jsonPointer: z.string().max(180), attribution: z.enum(["Google Maps listing", "Google Maps review photo"]),
+}).strict();
+export type EvidenceImage = z.infer<typeof evidenceImageSchema>;
 export const venueSchema = z.object({
   id: z.string().min(1), name: z.string().min(1).max(240), address: z.string().max(500).nullable(),
   googlePlaceId: z.string().max(300).nullable(), dataCid: z.string().max(300).nullable(), dataId: z.string().max(300).nullable(),
   website: z.string().nullable(), phone: z.string().max(100).nullable(), category: z.string().max(200).nullable(), sourceUrl: z.string().nullable(),
   latitude: z.number().nullable(), longitude: z.number().nullable(), rating: z.number().nullable(), provisional: z.boolean(),
+  images: z.array(evidenceImageSchema).max(4).optional(),
 });
 export type Venue = z.infer<typeof venueSchema>;
 export const sourceSchema = z.object({
@@ -28,6 +36,7 @@ export const sourceSchema = z.object({
   retrievedAt: z.string(), publishedAt: z.string().nullable(), editedAt: z.string().nullable(), observedAt: z.string().nullable(),
   selectionMethod: z.enum(["newest", "keyword", "discovery_attribute", "web_query"]), sourceGroupKey: z.string(),
   metadata: z.record(z.string(), z.unknown()), translatedText: z.string().max(4000).nullable().optional(),
+  images: z.array(evidenceImageSchema).max(2).optional(),
 });
 export type Source = z.infer<typeof sourceSchema>;
 export type SourceKind = Source["kind"];

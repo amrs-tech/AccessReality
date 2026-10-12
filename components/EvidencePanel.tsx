@@ -1,5 +1,6 @@
 import type { Report } from '../lib/contracts';
 import { featureLabels, formatDate, safeHref } from './ui-contracts';
+import { EvidenceImages } from './EvidenceImages';
 
 const kinds = { maps_attribute: 'Venue listing attribute', maps_review: 'Visitor report', search_snippet: 'Search snippet' };
 const selection = { newest: 'Newest review sample', keyword: 'Keyword-filtered review sample', discovery_attribute: 'Venue details', web_query: 'Venue-specific web search' };
@@ -7,6 +8,7 @@ const selection = { newest: 'Newest review sample', keyword: 'Keyword-filtered r
 export function EvidencePanel({ report }: { report: Report }) {
   return <section className="evidence-panel" aria-labelledby="evidence-heading"><div className="section-heading"><div><span className="eyebrow">The evidence ledger</span><h2 id="evidence-heading">Read what the sources say</h2></div><span className="count-pill">{report.sources.length}</span></div>
     <p className="small muted">Source dates describe when a report was published or observed. Retrieval time only tells you when this app collected it.</p>
+    <EvidenceImages report={report} />
     {report.sources.length === 0 ? <div className="empty-evidence"><span aria-hidden="true">?</span><h3>No source evidence is available</h3><p>The checks did not produce usable venue evidence. Selected requirements remain unknown; this does not establish a barrier.</p></div> : <div className="source-list">{report.sources.map((source, index) => {
       const claims = report.claims.filter(claim => claim.sourceId === source.id && claim.extractionStatus === 'accepted');
       const link = safeHref(source.sourceUrl);

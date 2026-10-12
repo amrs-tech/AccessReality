@@ -2,7 +2,7 @@ import { it,expect,vi,beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { JobRow } from '../../lib/workflow/state';
 import { initialState } from '../../lib/workflow/state';
-import { FEATURES,type Venue } from '../../lib/contracts';
+import { FEATURES,type Venue,type EvidenceImage } from '../../lib/contracts';
 import { advanceJob,buildReport,eligibleMenu } from '../../lib/workflow/runner';
 import { ProviderError } from '../../lib/providers/errors';
 import { normalizeDetails } from '../../lib/adapters/place';
@@ -183,4 +183,31 @@ it('an expanded corpus keeps its larger bound after credit conservation activate
   const search=vi.fn(async()=>({payload:{place_results:{title:venue.name,place_id:venue.googlePlaceId,extensions:[{accessibility:['Wheelchair accessible entrance']}]}},providerSearchId:'synthetic-only',retrievedAt:'2026-10-10T10:00:00Z',durationMs:1}));
   const result=await advanceJob('test-session',mock.job.id,0,{client,search});
   expect(result.state.sources).toHaveLength(65);expect(result.state.failedStages).not.toContain('corpus_limit');expect(result.state.claims).toHaveLength(1);
+});
+
+const testPhoto=(n:number):EvidenceImage=>({id:`synthetic-photo-${n}`,url:`https://lh3.googleusercontent.com/p/synthetic-${n}=w300`,sourceUrl:'https://www.google.com/maps',providerSearchId:'synthetic-search',retrievedAt:'2026-10-10T10:00:00Z',capturedAt:null,jsonPointer:`/reviews/${n}/images/0`,attribution:'Google Maps review photo'});
+it('photo-only reviews remain supplementary and consume no Gemini extraction request',async()=>{
+  mock.job.phase='extract';mock.job.state.sources=[makeSource({venueId:venue.id,kind:'maps_review',text:'',images:[testPhoto(1)],sourceUrl:'https://www.google.com/maps',providerReviewId:'synthetic-photo-review',providerSearchId:'synthetic-search',engine:'google_maps_reviews',retrievedAt:'2026-10-10T10:00:00Z',publishedAt:null,editedAt:null,observedAt:null,selectionMethod:'newest',metadata:{venueMatch:'exact'}})];
+  const extract=vi.fn();const result=await advanceJob('test-session',mock.job.id,0,{...deps(),extract});
+  expect(extract).not.toHaveBeenCalled();expect(mock.calls).not.toContain('reserve_provider_attempt');expect(result.phase).toBe('assess');
+  expect(result.state.sources[0].images).toHaveLength(1);expect(result.state.claims).toEqual([]);expect(buildReport(result,new Date('2026-10-10T10:00:00Z')).overall).toBe('needs_confirmation');
+});
+it('supplementary photo bounds preserve text evidence and never change assessment eligibility',async()=>{
+  mock.job.phase='finalize';mock.job.state.venue={...venue,images:Array.from({length:4},(_,n)=>({...testPhoto(n),attribution:'Google Maps listing' as const}))};
+  mock.job.state.sources=Array.from({length:20},(_,n)=>makeSource({venueId:venue.id,kind:'maps_review',text:`Synthetic irrelevant public text ${n}.`,images:[testPhoto(n*2+4),testPhoto(n*2+5)],sourceUrl:null,providerReviewId:`synthetic-${n}`,providerSearchId:'synthetic-search',engine:'google_maps_reviews',retrievedAt:'2026-10-10T10:00:00Z',publishedAt:null,editedAt:null,observedAt:null,selectionMethod:'newest',metadata:{venueMatch:'exact'}}));
+  const before=mock.job.state.sources.map((source:any)=>source.text);const result=await advanceJob('test-session',mock.job.id,0,deps());
+  expect((result.state.venue?.images?.length||0)+result.state.sources.reduce((n:number,source:any)=>n+(source.images?.length||0),0)).toBe(24);
+  const savedReport=mock.commits[0].p_report.report;
+  expect(savedReport.venue.images.length+savedReport.sources.reduce((n:number,source:any)=>n+(source.images?.length||0),0)).toBe(24);
+  expect(result.state.sources.map((source:any)=>source.text)).toEqual(before);expect(result.state.claims).toEqual([]);expect(result.state.failedStages).toEqual([]);expect(result.state.report?.overall).toBe('needs_confirmation');
+});
+it('checkpoint pressure drops supplementary photos before removing text sources',async()=>{
+  mock.job.phase='finalize';mock.job.state.syntheticCheckpointPadding='x'.repeat(440000);
+  mock.job.state.sources=Array.from({length:12},(_,n)=>makeSource({venueId:venue.id,kind:'maps_review',text:`Synthetic preserved review ${n}.`,images:[{...testPhoto(n*2),url:`https://lh3.googleusercontent.com/p/${'x'.repeat(1800)}${n*2}=w300`},{...testPhoto(n*2+1),url:`https://lh3.googleusercontent.com/p/${'x'.repeat(1800)}${n*2+1}=w300`}],sourceUrl:null,providerReviewId:`synthetic-${n}`,providerSearchId:'synthetic-search',engine:'google_maps_reviews',retrievedAt:'2026-10-10T10:00:00Z',publishedAt:null,editedAt:null,observedAt:null,selectionMethod:'newest',metadata:{venueMatch:'exact'}}));
+  const before=mock.job.state.sources.map((source:any)=>({id:source.id,text:source.text}));
+  const result=await advanceJob('test-session',mock.job.id,0,deps());
+  expect(Buffer.byteLength(JSON.stringify(result.state),'utf8')).toBeLessThanOrEqual(500000);
+  expect(result.state.sources.map((source:any)=>({id:source.id,text:source.text}))).toEqual(before);
+  expect(result.state.sources.reduce((n:number,source:any)=>n+(source.images?.length||0),0)).toBeLessThan(24);
+  expect(result.state.failedStages).toEqual([]);expect(result.phase).toBe('complete');
 });

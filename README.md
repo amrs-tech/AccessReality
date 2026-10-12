@@ -10,6 +10,7 @@ P0 application implemented. Hosted Supabase migrations, real SerpApi response sh
 - Up to five exact venue candidates. Names alone never merge branches.
 - Short, sequential, persisted steps: listing → newest reviews → schema extraction → deterministic assessment → a permitted gap search → brief.
 - A dated evidence ledger, separate arrival/entrance/movement/seating/restroom barriers, specific confirmation questions, print and JSON export.
+- Available public listing and review photos appear in a source-linked gallery. Capture dates remain unknown; photos never enter Gemini or establish accessibility, dimensions or current lift operation. Profile pictures are excluded. Existing saved reports need a new investigation because earlier adapters did not retain photo references.
 - A prominent result above the detailed report: must-haves supported, a reported must-have barrier, or requirements not confirmed. Missing evidence stays unconfirmed; preferred requirements cannot override a must-have, and incomplete evidence cannot produce a favorable headline.
 - Private 24-hour demo sessions, origin + session-bound CSRF checks, durable ownership checks and inaccessible browser database tables/RPCs.
 - PostgreSQL leases, version checks, idempotency keys, global/day/session/job budgets, an owner kill switch, reservation audits, dispatch markers and uncertain recovery.
@@ -77,6 +78,7 @@ The front page and `/api/health` run without credentials, but the real investiga
 | `npm run budget:init -- --enable` | Conservative real allowance reconciliation and deliberate DB enable |
 | `npm run test:live -- --confirm-live` | Opt-in real smoke, durable verification allocation required |
 | `npm run test:live:browser -- --confirm-live` | Actual Chrome login, pause/reload/resume, citations, reassessment, privacy and secret checks |
+| `npm run test:live:images -- --confirm-live` | Actual provider-photo retention and Chrome rendering; one preferred feature, three baseline checks, same30-search verification allocation |
 | `npm run test:live:quality -- --confirm-live` | One real Gemini call on 28 labeled synthetic examples; no venue search |
 | `npm run retention` | Retention dry run |
 | `npm run retention -- --delete` | Owner-requested permitted cleanup, budget audit retained |
@@ -105,6 +107,8 @@ Gemini's global ceiling is an owner-configured limit of 1000 attempts, not a ret
 For the initial **30-search maximum** verification allocation, set `VERIFICATION_MODE=true` in the running app and local `.env.local`, enable searches deliberately, then run the explicit live scripts. This separate allocation remains unchanged by the expanded owner demo policy. The server tags jobs into a durable allocation bucket; clients cannot select it or change caps. Confirm there is enough allocation for the intended finite run before starting. Scripts write sanitized results under ignored `.verification/`. `LIVE_APP_URL` can select the authorized deployed URL when its origin matches `APP_ORIGIN`. For ordinary owner-controlled demos after verification, set `VERIFICATION_MODE=false` and restart; the reserve, global, day, session, job and time limits still apply. Model quality checks make one Gemini request each; its account quota is not exposed as a verified balance.
 
 Provider failures produce readable partial briefs; timeout/network ambiguity consumes the reservation and prevents silent replay. Known429/5xx errors have at most one later capped retry. Text extraction failure preserves public sources. Invalid model planning uses a labeled deterministic fallback. Closing a browser pauses initiation, not already dispatched requests.
+
+Source photos are bounded to four listing references and two per sampled review, with24 retained per investigation and12 distinct photos displayed. Only known public Google photo CDN URLs are accepted; browser loading uses no-referrer, lazy rendering and an unavailable-image fallback. No image files are downloaded into Supabase, no reviewer profiles are retained, and no separate photo API/search engine is used. Photo-only reviews with an observed review ID are retained without inventing an excerpt and are excluded from text extraction. Maps/details/review cache versions changed to collect these optional fields; Google web-snippet cache keys are preserved. Changing an existing requirement still reuses the saved corpus with zero new searches.
 
 ## Vercel deployment
 
